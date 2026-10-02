@@ -23,6 +23,20 @@ import (
 // every test either wait it out or exercise the wait's early-exit paths
 // (UserPending, ctx.Done()) exclusively, leaving the timer.C arm of
 // runWithHandoff's select with no coverage at all.
+//
+// The cleanup DRAINS the registry before it tears the notifier down, and that
+// is load-bearing rather than tidiness. A child that is still running when the
+// test returns keeps going: it finishes later, and by then the next test has
+// already installed its own notifier, so this test's completion notice lands
+// in the next test's recordingNotifier. That is what made
+// TestBlockingCallStillHandsOffWhenSlow fail on a loaded CI runner with
+// "expected exactly one completion notice, got 2" — two notices for two
+// DIFFERENT job ids, about a second apart.
+//
+// Waiting for terminal status is enough, and it is the real signal rather than
+// a sleep: spawn's job function posts the notice itself, before it returns, so
+// a job that has reached a terminal status has already notified (spawn's
+// `st.finish(res)` branch, see subagent.go).
 func handoffEnv(t *testing.T, after time.Duration) (*jobs.Registry, *recordingNotifier) {
 	t.Helper()
 	reg := jobs.NewRegistry()
@@ -33,12 +47,91 @@ func handoffEnv(t *testing.T, after time.Duration) (*jobs.Registry, *recordingNo
 
 	restoreAfter := SetSubagentBackgroundAfterSecForTests(after)
 	t.Cleanup(func() {
+		drainJobs(t, reg)
 		SetJobStarter(nil)
 		SetJobNotifier(nil)
 		SetBackgroundBashEnabled(false)
 		restoreAfter()
 	})
 	return reg, notifier
+}
+
+// drainJobs waits for every job in reg to reach a terminal status, so nothing
+// this test started can notify after the test is over. Called from
+// handoffEnv's cleanup, where a t.Fatalf would abort the rest of the cleanup
+// and leave the globals half-torn-down, so it reports through t.Errorf and
+// carries on. Any test whose child is still blocked on a release channel at
+// this point has to unblock it in the test body (a plain `defer close(...)`
+// runs before cleanups), which every test here already does.
+func drainJobs(t *testing.T, reg *jobs.Registry) {
+	t.Helper()
+	for _, j := range reg.List() {
+		if !jobLiveStatus(j.Status) {
+			continue
+		}
+		job, ok := reg.Wait(context.Background(), j.ID, 5*time.Second)
+		if !ok {
+			t.Errorf("cleanup: job %s vanished from the registry", j.ID)
+			continue
+		}
+		if jobLiveStatus(job.Status) {
+			t.Errorf("cleanup: job %s was still %s 5s after the test ended — it can post its notice into the NEXT test's notifier", j.ID, job.Status)
+		}
+	}
+}
+
+func jobLiveStatus(s jobs.Status) bool {
+	return s == jobs.StatusRunning || s == jobs.StatusWaitingAnswer
+}
+
+// TestHandoffEnvDrainsBeforeNotifierIsTornDown pins the invariant the
+// cross-test notice leak above broke, so it cannot come back unnoticed: once
+// a handoffEnv test's cleanup has run, nothing it started may still be running.
+//
+// The inner test is the leak, made deterministic instead of left to a loaded
+// runner's timing: it hands a child over and then unblocks it, but the child
+// takes handoffLeakSlowChild to return, so a cleanup that does not wait comes
+// back with the job still running and the notice not yet posted. Both halves
+// are asserted below — the leak showed up as one without the other.
+func TestHandoffEnvDrainsBeforeNotifierIsTornDown(t *testing.T) {
+	var (
+		reg      *jobs.Registry
+		notifier *recordingNotifier
+	)
+	// Long enough that an un-drained cleanup cannot race past it, short
+	// enough to keep the test quick when the drain works (it waits exactly
+	// this long, and no longer).
+	const handoffLeakSlowChild = 100 * time.Millisecond
+
+	ok := t.Run("inner", func(t *testing.T) {
+		reg, notifier = handoffEnv(t, 0)
+		release := make(chan struct{})
+		tool := handoffTool(t, func() (string, error) {
+			<-release
+			// Simulates a child that takes a moment to unwind. Not a
+			// synchronization point for anything the assertions rely on —
+			// it exists so the regression is reproducible without relying
+			// on how quickly a goroutine happens to be scheduled.
+			time.Sleep(handoffLeakSlowChild)
+			return "late", nil
+		})
+		st := tool.spawn(context.Background(), subagentTask{Task: "slow"}, false, true)
+		tool.handOff(context.Background(), []*spawnedTask{st}, true)
+		close(release)
+		// Returned while the child is still on its way out.
+	})
+	if !ok {
+		t.Fatal("the inner test failed; its cleanup state is not worth asserting on")
+	}
+
+	for _, j := range reg.List() {
+		if jobLiveStatus(j.Status) {
+			t.Fatalf("handoffEnv's cleanup returned with job %s still %s: its completion notice would land in the NEXT test's notifier", j.ID, j.Status)
+		}
+	}
+	if notices := notifier.all(); len(notices) != 1 {
+		t.Fatalf("expected the handed-over child's one completion notice to have been posted before the cleanup returned, got %d: %v", len(notices), notices)
+	}
 }
 
 func handoffTool(t *testing.T, work func() (string, error)) *SubagentTool {
@@ -510,8 +603,16 @@ func TestBlockingCallStillHandsOffWhenSlow(t *testing.T) {
 	if n := calls.Load(); n != 1 {
 		t.Fatalf("runner invoked %d times, want exactly 1", n)
 	}
-	if n := len(notifier.all()); n != 1 {
-		t.Fatalf("expected exactly one completion notice, got %d: %v", n, notifier.all())
+	// The notifier is process-global, so a job leaked by an earlier test can
+	// still deliver its notice here late. Count only this job's notices.
+	var own []string
+	for _, n := range notifier.all() {
+		if strings.Contains(n, job.ID) {
+			own = append(own, n)
+		}
+	}
+	if len(own) != 1 {
+		t.Fatalf("expected exactly one completion notice for %s, got %d: %v", job.ID, len(own), notifier.all())
 	}
 }
 

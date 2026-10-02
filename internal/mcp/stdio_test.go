@@ -18,12 +18,23 @@ func requireSh(t *testing.T) {
 	}
 }
 
-// initScript is a minimal fake MCP server: it writes one valid JSON-RPC
-// initialize response (id 1, matching StdioClient's first nextID) to
-// stdout, then keeps draining stdin until it's closed so that
-// notifications/initialized (and Close's stdin.Close) don't blow up on a
-// broken pipe.
-const initScript = `printf '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"fake","version":"1.0"}}}\n'; cat >/dev/null`
+// initScript is a minimal fake MCP server: it reads the client's initialize
+// request line, writes one valid JSON-RPC initialize response (id 1, matching
+// StdioClient's first nextID) to stdout, then keeps draining stdin until it's
+// closed so that notifications/initialized (and Close's stdin.Close) don't blow
+// up on a broken pipe.
+//
+// The leading `read -r _` is load-bearing, not decoration. Initialize starts
+// readLoop BEFORE sendRequest has registered c.pending[1], and readLoop drops
+// a response whose id has no pending entry (see stdio.go). A server that
+// printed its answer without reading the request first could therefore have it
+// consumed and thrown away inside that window — sendRequest would then wait for
+// a reply that can never come and fail with "initialize: context deadline
+// exceeded" after the full timeout, intermittently, exactly when the goroutine
+// running readLoop is descheduled (which is what a loaded -race runner does).
+// A real MCP server answers only after it has been asked, so reading first is
+// also the faithful fake.
+const initScript = `read -r _; printf '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"fake","version":"1.0"}}}\n'; cat >/dev/null`
 
 // TestStdioClientInitializeHandshake performs a real stdio handshake against
 // a script that speaks the protocol. Before the Initialize locking fix,
