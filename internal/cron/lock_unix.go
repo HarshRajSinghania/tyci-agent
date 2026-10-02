@@ -20,15 +20,15 @@ func TryLock(path string) (release func(), ok bool, err error) {
 		return func() {}, false, fmt.Errorf("cron: open lock file: %w", err)
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
+		_ = f.Close() // the lock error is what gets reported
 		if err == syscall.EWOULDBLOCK {
 			return func() {}, false, nil
 		}
 		return func() {}, false, fmt.Errorf("cron: lock %s: %w", path, err)
 	}
 	release = func() {
-		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		f.Close()
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close() // lock file only; nothing was written
 	}
 	return release, true, nil
 }

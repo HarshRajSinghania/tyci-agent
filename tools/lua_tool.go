@@ -124,7 +124,7 @@ func (t *LuaTool) loadProto() (*lua.FunctionProto, error) {
 			t.protoErr = fmt.Errorf("failed to open lua script: %w", err)
 			return
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }() // read-only
 
 		chunk, err := parse.Parse(f, t.scriptPath)
 		if err != nil {
@@ -224,7 +224,7 @@ func (t *LuaTool) run(ctx context.Context, input map[string]any) ToolResult {
 
 	// Call the run function
 	if err := L.CallByParam(lua.P{
-		Fn:      runVal.(lua.LValue),
+		Fn:      runVal,
 		NRet:    1,
 		Protect: true,
 	}, sandbox, argsTable); err != nil {

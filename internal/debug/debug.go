@@ -53,7 +53,7 @@ func (l *Logger) Close() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.file != nil {
-		l.file.Close()
+		_ = l.file.Close() // best effort: a debug log must not fail the caller
 		l.file = nil
 	}
 }
@@ -69,24 +69,24 @@ func (l *Logger) Write(p []byte) (int, error) {
 
 func (l *Logger) WriteRequest(method, url string, body []byte) {
 	fmt.Fprintf(l, "--- REQUEST %s %s ---\n", method, url)
-	l.Write(body)
-	l.Write([]byte("\n"))
+	_, _ = l.Write(body)
+	_, _ = l.Write([]byte("\n"))
 }
 
 func (l *Logger) WriteResponse(status int, body []byte) {
 	fmt.Fprintf(l, "--- RESPONSE %d ---\n", status)
-	l.Write(body)
-	l.Write([]byte("\n"))
+	_, _ = l.Write(body)
+	_, _ = l.Write([]byte("\n"))
 }
 
 func (l *Logger) WriteResponseLine(line []byte) {
-	l.Write(line)
+	_, _ = l.Write(line)
 }
 
 func (l *Logger) WriteRequestLine(prefix string, body []byte) {
 	fmt.Fprintf(l, "--- %s ---\n", prefix)
-	l.Write(body)
-	l.Write([]byte("\n"))
+	_, _ = l.Write(body)
+	_, _ = l.Write([]byte("\n"))
 }
 
 func newUUIDv7() (string, error) {

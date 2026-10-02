@@ -203,7 +203,7 @@ func runSessionShow(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // read-only
 	info, _ := f.Stat()
 	fmt.Fprintf(os.Stdout, "Path:    %s\n", path)
 	if info != nil {
@@ -317,7 +317,7 @@ func runSessionDelete(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(os.Stdout, "Delete %s? [y/N] ", path)
 	var ans string
-	fmt.Scanln(&ans)
+	_, _ = fmt.Scanln(&ans)
 	ans = strings.ToLower(strings.TrimSpace(ans))
 	if ans != "y" && ans != "yes" {
 		fmt.Fprintln(os.Stdout, "Aborted.")

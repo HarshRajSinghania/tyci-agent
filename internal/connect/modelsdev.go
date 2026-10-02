@@ -225,7 +225,7 @@ func writeCatalogAtomically(path string, data []byte) error {
 	}
 	defer os.Remove(tmp.Name())
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close() // the write error is what gets reported
 		return fmt.Errorf("writing providers.json: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
@@ -311,23 +311,4 @@ func fetchModelsDev(doer HTTPDoer) ([]byte, error) {
 		return nil, fmt.Errorf("reading response: %w", err)
 	}
 	return body, nil
-}
-
-// writeModelJSON writes the config to model.json (used by `tyci connect`).
-func writeModelJSON(path string, cfg map[string]map[string]uriEntry) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("creating config dir: %w", err)
-	}
-
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encoding config: %w", err)
-	}
-
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return fmt.Errorf("writing config: %w", err)
-	}
-
-	return nil
 }
