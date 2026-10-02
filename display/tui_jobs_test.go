@@ -48,6 +48,24 @@ func TestApplyJobUpdate_InsertsAndUpdatesByID(t *testing.T) {
 	}
 }
 
+func TestApplyJobUpdate_IgnoresStaleSnapshotAfterTerminal(t *testing.T) {
+	m := newTestModelForJobs()
+	started := time.Now()
+	m.applyJobUpdate(jobs.Job{ID: "job-1", Status: jobs.StatusRunning, StartedAt: started, EventSeq: 1})
+	m.applyJobUpdate(jobs.Job{ID: "job-1", Status: jobs.StatusDone, StartedAt: started, FinishedAt: time.Now(), EventSeq: 3})
+
+	// A progress snapshot taken before the terminal one but published after it.
+	m.applyJobUpdate(jobs.Job{ID: "job-1", Status: jobs.StatusRunning, StartedAt: started, Progress: "late", EventSeq: 2})
+
+	got := m.backgroundJobs["job-1"]
+	if got.Status != jobs.StatusDone {
+		t.Fatalf("status = %s, want done (a late running snapshot overwrote the terminal one)", got.Status)
+	}
+	if got.Progress != "" {
+		t.Errorf("progress = %q, want the terminal snapshot to be kept", got.Progress)
+	}
+}
+
 func TestApplyJobUpdate_IgnoresResetOldJobAndAcceptsNewJob(t *testing.T) {
 	m := newTestModelForJobs()
 	old := jobs.Job{ID: "old", Description: "old task", Status: jobs.StatusRunning, StartedAt: time.Now()}
@@ -531,5 +549,50 @@ func TestForwardJobUpdates_FloodWithSlowConsumerKeepsTerminalStates(t *testing.T
 		if got, want := m.backgroundJobs[id].Status, terminal[i%len(terminal)]; got != want {
 			t.Errorf("%s status = %s, want %s", id, got, want)
 		}
+	}
+}
+
+// TestForwardJobUpdates_LateSnapshotDoesNotOverwriteTerminalState is the
+// regression test for #131: the registry publishes after releasing its lock, so
+// a "running" snapshot taken before the terminal one can reach the bus after it,
+// while the TUI is still busy and has not drained yet.
+func TestForwardJobUpdates_LateSnapshotDoesNotOverwriteTerminalState(t *testing.T) {
+	bus := eventbus.New(32)
+	defer bus.Close()
+
+	sub, unsubscribe := bus.SubscribeCoalesced("job.updated", jobEventKey, eventbus.WithReplaces(jobEventReplaces))
+	defer unsubscribe()
+
+	started := time.Now()
+	bus.Publish("job.updated", jobs.Job{ID: "job-1", Status: jobs.StatusRunning, StartedAt: started, EventSeq: 1})
+	// Drained and applied: the TUI holds "running" (seq 1).
+	m := newTestModelForJobs()
+	for _, evt := range sub.Drain() {
+		m.applyJobUpdate(evt.Payload.(jobs.Job))
+	}
+
+	// Terminal (seq 3) is published first, then the older progress snapshot (seq 2),
+	// both before the next drain.
+	bus.Publish("job.updated", jobs.Job{ID: "job-1", Status: jobs.StatusDone, StartedAt: started, FinishedAt: time.Now(), EventSeq: 3})
+	bus.Publish("job.updated", jobs.Job{ID: "job-1", Status: jobs.StatusRunning, StartedAt: started, Progress: "late", EventSeq: 2})
+
+	stop := make(chan struct{})
+	consumerDone := make(chan struct{})
+	go func() {
+		defer close(consumerDone)
+		forwardJobUpdates(sub, stop, func(msg tea.Msg) {
+			model, _ := m.Update(msg)
+			m = model.(TuiModel)
+		})
+	}()
+	unsubscribe()
+	select {
+	case <-consumerDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("consumer did not finish")
+	}
+
+	if got := m.backgroundJobs["job-1"].Status; got != jobs.StatusDone {
+		t.Fatalf("status = %s, want done", got)
 	}
 }
