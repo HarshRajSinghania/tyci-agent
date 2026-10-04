@@ -2,6 +2,7 @@ package display
 
 import (
 	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 	"time"
@@ -73,31 +74,111 @@ func (m TuiModel) buildStatus() string {
 		return ""
 	}
 
-	return assembleStatusRow(strings.Join(leftParts, " │ "), strings.Join(rightParts, " │ "), m.width)
+	return assembleStatusRow(strings.Join(leftParts, statusSep), strings.Join(rightParts, statusSep), m.width)
+}
+
+// statusSep joins the items of both sides of the status bar. The right side
+// is also SPLIT on it by fitStatusRight, which drops items whole, so an item
+// must be neither empty nor contain the separator itself: a doubled separator
+// makes a drop leave the " │ " that preceded the missing item behind, and a
+// leading one renders as an item of its own. buildStatus only appends
+// non-empty items, so neither can happen today.
+const statusSep = " │ "
+
+// statusRightReserve is 1, which is the tight bound — not a margin.
+//
+// The right side may therefore fill width-1 columns, and the row still fits:
+// the left side floors at 1 column (assembleStatusRow never truncates it to
+// nothing), so left+right is then exactly `width`, rendered without either
+// surrounding space. One column less and a figure that used to be shown
+// disappears at every width where the right side would have been exactly
+// width-1 wide; one column more and the two sides' floors push the row one
+// column past the terminal.
+//
+// 1 is also what the shipped code used before #125 clamped the right side in
+// the bar, so keeping it renders every session exactly as v0.1.0 did.
+const statusRightReserve = 1
+
+// statusRightBudget is how many columns the right side of the status bar may
+// occupy at a given terminal width.
+//
+// ONE budget, defined next to the code that has to honour it last:
+// assembleStatusRow. A producer sizes its own output with this function
+// rather than with arithmetic of its own, because two budgets in two files
+// drift apart silently and the TIGHTER one wins — which is the bug in #153:
+// buildContextCost allowed width-1 while assembleStatusRow allowed width-3,
+// so a session bill of "0.596$" was ellipsized to "0.59…" one layer above
+// the rule that says a figure is dropped rather than cut.
+func statusRightBudget(width int) int {
+	switch {
+	case width <= 0:
+		// "not resized yet" — unbounded on purpose, matching what both
+		// buildContextCost and assembleStatusRow did before this budget was
+		// shared. That frame is built but never painted (paintRegion
+		// returns early on width <= 0), so the only caller that can see it
+		// is a test that builds a TuiModel directly.
+		return math.MaxInt
+	case width <= statusRightReserve:
+		return 0
+	default:
+		return width - statusRightReserve
+	}
+}
+
+// fitStatusRight returns the longest leading run of the right side's items
+// that fits maxW columns. Whole items are dropped from the end rather than
+// the run being ellipsized: the items are figures (a context percentage, a
+// dollar amount), and half of one reads as the whole while stating less —
+// which for a bill is worse than showing none.
+//
+// An item that does not fit on its own takes the rest with it: there is
+// nothing shorter than "nothing" to show in its place, and cutting it is the
+// thing this function exists to avoid.
+func fitStatusRight(right string, maxW int) string {
+	if right == "" || lipgloss.Width(right) <= maxW {
+		return right
+	}
+	items := strings.Split(right, statusSep)
+	kept := ""
+	for _, item := range items {
+		if strings.TrimSpace(item) == "" {
+			continue // see statusSep: an item with nothing to show is not one,
+			// and keeping the separator in front of it is what would
+			// manufacture a trailing " │ "
+		}
+		candidate := item
+		if kept != "" {
+			candidate = kept + statusSep + item
+		}
+		if lipgloss.Width(candidate) > maxW {
+			break
+		}
+		kept = candidate
+	}
+	return kept
 }
 
 // assembleStatusRow joins the left and right parts of the status bar into
 // one row, clamping BOTH sides to the terminal width. Extracted from
 // buildStatus so the width invariant can be tested with an over-long right
 // part directly — buildStatus's only right-side producer (buildContextCost)
-// already caps itself, so an over-long right never reaches the bar through
-// buildStatus alone.
+// already sizes itself with statusRightBudget, so an over-long right never
+// reaches the bar through buildStatus alone.
 func assembleStatusRow(left, right string, width int) string {
 	// Clamp the right side in the bar itself, not just in each producer.
-	// buildContextCost (the only current producer) bounds its own output,
-	// but the protection then sits with the producer: any future item
-	// appended to rightParts without its own budget lets an over-long
-	// right string through, forcing lipgloss to WRAP the row and drifting
-	// the fixed frame height — the same failure mode the left-side cap
-	// below exists to prevent. width <= 0 ("no resize yet") stays
-	// unbounded, matching buildContextCost's documented contract; that
-	// frame is never painted.
+	// buildContextCost (the only current producer) honors the same budget,
+	// but the protection would otherwise sit with the producer: any future
+	// item appended to rightParts without it lets an over-long right string
+	// through, forcing lipgloss to WRAP the row and drift the fixed frame
+	// height — the same failure mode the left-side cap below exists to
+	// prevent.
+	//
+	// Items are dropped, never cut, for the reason in fitStatusRight: a
+	// cut figure misreports the session. width <= 0 ("no resize yet")
+	// stays unbounded, matching statusRightBudget's documented contract;
+	// that frame is never painted.
 	if width > 0 {
-		maxRightW := width - 3 // reserve room for the left-side floor + gaps
-		if maxRightW < 1 {
-			maxRightW = 1
-		}
-		right = truncateStatusText(right, maxRightW)
+		right = fitStatusRight(right, statusRightBudget(width))
 	}
 
 	// Hard-cap left BEFORE computing padding. Every fragment above is
