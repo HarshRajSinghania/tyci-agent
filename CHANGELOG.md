@@ -6,6 +6,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `internal/flowconfig`: strict loader for workflow `models`, `default_model` and role (`model`, `prompt`) config merged from `~/.tyci/config.json` and trust-gated `<projectDir>/.tyci/config.json`. Not read by any command yet. Known limitation: it shares the `config.json` paths with the existing agent settings (`agent.TyciConfig`), whose keys this strict schema rejects, so the two schemas must be reconciled before the loader is wired up (#157)
+
 ## [0.2.0] - 2026-10-05
 
 ### Added

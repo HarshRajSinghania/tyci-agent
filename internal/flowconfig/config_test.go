@@ -188,6 +188,26 @@ func TestLoad_RoleWithUnknownModelIsError(t *testing.T) {
 	}
 }
 
+func TestLoad_DefaultModelWithUnknownAliasIsError(t *testing.T) {
+	home := t.TempDir()
+	project := t.TempDir()
+	writeGlobal(t, home, `{
+		"models": {"m1": "openai://m1@tok@host"},
+		"default_model": "nope"
+	}`)
+	_, err := Load(home, project, true)
+	if err == nil {
+		t.Fatal("expected unknown default_model error")
+	}
+	if !strings.Contains(err.Error(), "nope") {
+		t.Fatalf("error must name alias, got %v", err)
+	}
+	globalPath := filepath.Join(home, ".tyci", "config.json")
+	if !strings.Contains(err.Error(), globalPath) {
+		t.Fatalf("error must contain file path %q, got %v", globalPath, err)
+	}
+}
+
 func TestLoad_PromptFileReference(t *testing.T) {
 	home := t.TempDir()
 	project := t.TempDir()

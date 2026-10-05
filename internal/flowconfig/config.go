@@ -41,6 +41,14 @@ func defaultPrompt(role string) (string, bool) {
 // only when trusted is true. A missing file is not an error. Unknown JSON
 // keys are errors. Project scalars win when non-zero, models merge per alias
 // and roles are replaced per role name.
+//
+// NOTE: these are the same paths already managed by agent.TyciConfig
+// (agent/config.go: default_model as a model spec, favorite_models,
+// max_tokens, prompt_cache, ...), so a file written for the agent settings
+// fails this strict schema and vice versa. Reconciling the two schemas (or
+// giving the workflow loader its own file) needs an SDR amendment and must
+// happen before anything calls Load; see CHANGELOG [Unreleased]. Do not
+// loosen validation here without updating the SDR and the issue-pinned tests.
 func Load(home, projectDir string, trusted bool) (*Config, error) {
 	var globalPath, projectPath string
 	var globalCfg, projectCfg *Config
