@@ -174,8 +174,15 @@ type Config struct {
 	// maxProgressHeartbeats counter next to maxTodoReminders/
 	// maxJobReminders — the time gate itself is what keeps this from
 	// crowding out the real conversation, per item 15's decided design
-	// (time-based, not step-based, reusing SubagentBackgroundAfter).
+	// (time-based, not step-based; the threshold is ping_interval/2, see main.go and tools.JobProgressHeartbeatCheck).
 	ProgressHeartbeat func() bool
+
+	// AutoPing, if set, is called once per loop iteration after a
+	// ProgressHeartbeat nudge was sent. last describes the last tool call
+	// ("bash: go test ./..."). The callback owns the timing (see
+	// jobs.Registry.AutoProgress): it posts only when a full ping interval
+	// passed without a note, so calling it every iteration is cheap.
+	AutoPing func(last string)
 }
 
 // maxTodoReminders bounds how many times, within a single turn, the agent
@@ -254,6 +261,7 @@ func Run(ctx context.Context, mc connector.ModelClient, d Sink, msgs *[]connecto
 	// Track fallback state across iterations
 	fs := fallbackState{idx: -1, mc: mc}
 
+	nudged := false
 	for iter := 0; cfg.MaxIterations <= 0 || iter < cfg.MaxIterations; iter++ {
 		// Warn the model, one turn ahead, when an explicit iteration cap or
 		// caller deadline is about to stop this run. Ordinary subagent runs
@@ -296,6 +304,7 @@ func Run(ctx context.Context, mc connector.ModelClient, d Sink, msgs *[]connecto
 		// sticky state — only gated on NOT sharing a turn with the last-step
 		// warning above (which forbids tool calls; report_progress is one).
 		if !warnedThisIteration && cfg.ProgressHeartbeat != nil && cfg.ProgressHeartbeat() {
+			nudged = true
 			reminder := buildProgressHeartbeatReminder()
 			*msgs = append(*msgs, connector.Message{
 				Role:    "user",
@@ -305,6 +314,9 @@ func Run(ctx context.Context, mc connector.ModelClient, d Sink, msgs *[]connecto
 				blocks := []session.ContentBlock{{Type: "text", Text: reminder}}
 				_ = cfg.Session.WriteMessage("user", blocks, nil)
 			}
+		}
+		if nudged && cfg.AutoPing != nil {
+			cfg.AutoPing(lastToolSummary(*msgs))
 		}
 		// runOnce accumulates usage into totalUsage and emits d.Total
 		// only when it reaches the Summary line. totalEmitted reports
@@ -717,7 +729,7 @@ func buildAutoCompactSummary(used, limit int, dumpPath string) string {
 
 // buildProgressHeartbeatReminder produces the harness-authored nudge
 // injected into a subagent's own loop when it has gone quiet — no
-// report_progress note — for longer than SubagentBackgroundAfter (see
+// report_progress note — for longer than ping_interval/2 (see
 // tools.JobProgressHeartbeatCheck and jobs.Registry.NeedsProgressHeartbeat).
 // Fire-and-forget by design (item 15): nothing requires the model to answer
 // in any particular shape or even acknowledge this message, only to call
