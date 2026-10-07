@@ -11,7 +11,7 @@ import (
 // find embedded. Keeping it in one place means a change to
 // internal/agentdefs/builtin/*.md shows up as a single, obvious diff here
 // instead of a dozen unrelated-looking assertions.
-var builtinNames = []string{"implementer", "locator", "reviewer"}
+var builtinNames = []string{"implementer", "locator", "oracle", "reviewer"}
 
 func mustSync(t *testing.T, dir string, force bool) SyncResult {
 	t.Helper()
@@ -356,8 +356,8 @@ func TestBuiltin_ParsesAllWithoutError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Builtin() returned error: %v", err)
 	}
-	if len(defs) != 3 {
-		t.Fatalf("Builtin() returned %d defs, want 3: %+v", len(defs), defs)
+	if len(defs) != len(builtinNames) {
+		t.Fatalf("Builtin() returned %d defs, want %d: %+v", len(defs), len(builtinNames), defs)
 	}
 	got := make([]string, len(defs))
 	for i, d := range defs {
