@@ -43,22 +43,26 @@ type Ask struct {
 // RunState is the persisted run state (state.json, version 1).
 // Reason is an addition to SDR 5.7: why the run failed.
 type RunState struct {
-	Version   int            `json:"version"` // 1
-	Run       string         `json:"run"`
-	Workflow  string         `json:"workflow"`
-	Repo      string         `json:"repo"`
-	Issue     int            `json:"issue"`
-	Branch    string         `json:"branch"`
-	Worktree  string         `json:"worktree"`
-	Status    string         `json:"status"` // running|paused|done|failed
-	Reason    string         `json:"reason,omitempty"`
-	Current   string         `json:"current"`
-	Ask       *Ask           `json:"ask,omitempty"`
-	PR        int            `json:"pr,omitempty"`
-	StartedAt time.Time      `json:"started_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
-	Visits    map[string]int `json:"visits"`
-	History   []Step         `json:"history"`
+	Version  int    `json:"version"` // 1
+	Run      string `json:"run"`
+	Workflow string `json:"workflow"`
+	Repo     string `json:"repo"`
+	Issue    int    `json:"issue"`
+	Branch   string `json:"branch"`
+	Worktree string `json:"worktree"`
+	Status   string `json:"status"` // running|paused|done|failed
+	Reason   string `json:"reason,omitempty"`
+	Current  string `json:"current"`
+	Ask      *Ask   `json:"ask,omitempty"`
+	PR       int    `json:"pr,omitempty"`
+	// LastCommentID and LastReviewCommentID are the highest PR issue comment id and
+	// PR review comment id that fetch_comments.sh has handled (two separate id sequences).
+	LastCommentID       int64          `json:"last_comment_id,omitempty"`
+	LastReviewCommentID int64          `json:"last_review_comment_id,omitempty"`
+	StartedAt           time.Time      `json:"started_at"`
+	UpdatedAt           time.Time      `json:"updated_at"`
+	Visits              map[string]int `json:"visits"`
+	History             []Step         `json:"history"`
 }
 
 // Step is one executed transition.
@@ -128,5 +132,7 @@ type Runner struct {
 	// DefaultBranch is TYCI_DEFAULT_BRANCH and RunContext.DefaultBranch.
 	DefaultBranch string
 	Notify        func(string)
-	OnSkip        func(*RunState)
+	// Warn receives warnings that the Manager does not send itself.
+	Warn   func(string)
+	OnSkip func(*RunState)
 }

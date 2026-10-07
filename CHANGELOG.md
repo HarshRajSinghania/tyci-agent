@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Flow: the final review is posted as a PR review, and new PR comments from team members go back to the worker (#187).
 - TUI: new sidebar tab "Runs" shows recent flow runs with status, current state, role, time in state and last steps (#296).
 - Orchestrator: `workers > 1` now runs several issues at the same time, and the roadmap oracle order replaces `fallbackOrder` (#283).
 
