@@ -37,8 +37,9 @@ The file accepts only the keys shown here and `check_timeout_sec`.
     "strong": "my-provider/my-strong-model"
   },
   "default_model": "fast",
+  "default_effort": "medium",
   "roles": {
-    "worker": {"model": "strong"},
+    "worker": {"model": "strong", "effort": "high"},
     "review": {"model": "strong"}
   }
 }
@@ -46,6 +47,7 @@ The file accepts only the keys shown here and `check_timeout_sec`.
 
 - `models` maps an alias to a `provider/model` name. Aliases are optional: `default_model` and a role's `model` may also be a direct `provider/model` name (for example, `nexos/GPT 5.6 Luna`).
 - `default_model` is used by a role that has no `model`.
+- `effort` on a role sets the reasoning effort (`low`, `medium`, `high`, `xhigh` or `max`). `default_effort` is used by a role that has no `effort`. A `?reasoning=` option in the model URI wins over both. If none is set, the provider default applies.
 - `roles` is optional. The roles are `worker`, `review` and `merge_decision`.
   A role may set `prompt`; `"@file.md"` reads a file next to the config file.
 

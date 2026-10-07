@@ -233,3 +233,40 @@ func TestSubagentRunner_NamesJobAndAddsNote(t *testing.T) {
 		t.Fatalf("task lacks the note: %q", sp.Task)
 	}
 }
+
+// #186: the role effort (or default_effort) reaches the child.
+func TestSubagentRunner_PassesRoleEffort(t *testing.T) {
+	s := &spawnRec{}
+	r := newRunner(s)
+	r.Cfg.DefaultEffort = "medium"
+	r.Cfg.Roles["worker"] = flowconfig.Role{Prompt: "W", Effort: "low"}
+	for _, role := range []string{"worker", "review"} {
+		if _, _, err := r.Run(context.Background(), role, "", RunContext{Worktree: t.TempDir()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if s.specs[0].Effort != "low" || s.specs[1].Effort != "medium" {
+		t.Fatalf("efforts = %q, %q", s.specs[0].Effort, s.specs[1].Effort)
+	}
+}
+
+func TestSubagentRunner_URIEffortWinsInStats(t *testing.T) {
+	s := &spawnRec{}
+	r := newRunner(s)
+	r.Cfg.Roles["worker"] = flowconfig.Role{Prompt: "W", Effort: "low"}
+	r.URIEffort = func(string) string { return "xhigh" }
+	var st StepStats
+	if _, _, err := r.Run(context.Background(), "worker", "", RunContext{Worktree: t.TempDir(), Stats: &st}); err != nil {
+		t.Fatal(err)
+	}
+	s.specs[0].OnDone(tools.TaskStats{})
+	if st.Effort != "xhigh" {
+		t.Fatalf("effort = %q", st.Effort)
+	}
+}
+
+func TestStepStats_HasEffort(t *testing.T) {
+	if got := stepStats("p/m", "low", tools.TaskStats{}); got.Effort != "low" {
+		t.Fatalf("effort = %q", got.Effort)
+	}
+}

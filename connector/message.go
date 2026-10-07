@@ -60,6 +60,10 @@ type Request struct {
 	// asks for — so it can stand in for "unset" without ambiguity.
 	MaxTokens int
 
+	// Effort, when set, is the reasoning effort for this request. A
+	// ?reasoning= option in the provider URI wins over it. Empty means no effort.
+	Effort string
+
 	// NoPromptCache turns off provider-side prompt caching for this request.
 	//
 	// Negated on purpose: caching is the right default — it is the difference
