@@ -41,7 +41,8 @@ type StartRequest struct {
 	Issue    int
 }
 
-// Manager starts and resumes runs in goroutines. v0.3.0 allows ONE active run.
+// Manager starts and resumes runs in goroutines. Several runs may be active, but
+// only one per issue.
 type Manager struct {
 	// Info detects the repository. Called for every request.
 	Info func() (RepoInfo, error)
@@ -54,10 +55,77 @@ type Manager struct {
 	NewRunner func(info RepoInfo, wf *Workflow, st *RunState) *Runner
 	// Notify receives the one-line notices. Optional.
 	Notify func(string)
+	// Text runs a one-agent workflow on a text input and returns the final agent
+	// text (production: the roadmap workflow). It creates no run state. Optional.
+	Text func(ctx context.Context, info RepoInfo, wf *Workflow, input string) (string, error)
 
 	mu     sync.Mutex
 	base   context.Context
-	active map[string]context.CancelFunc
+	active map[string]activeRun
+	subs   map[int]func(RunEvent)
+	nsub   int
+}
+
+// activeRun is a run with a goroutine in this process.
+type activeRun struct {
+	cancel context.CancelFunc
+	issue  int
+}
+
+// RunEvent tells a subscriber that a run started again (Status running, after
+// Resume) or stopped (done, failed or paused).
+type RunEvent struct {
+	Run    string
+	Status string
+	PR     int
+	Reason string
+}
+
+// Subscribe registers fn for the run events. fn runs on the run goroutine and must
+// not block or call the Manager. The returned function removes it.
+func (m *Manager) Subscribe(fn func(RunEvent)) func() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.subs == nil {
+		m.subs = map[int]func(RunEvent){}
+	}
+	m.nsub++
+	id := m.nsub
+	m.subs[id] = fn
+	return func() {
+		m.mu.Lock()
+		delete(m.subs, id)
+		m.mu.Unlock()
+	}
+}
+
+func (m *Manager) emit(ev RunEvent) {
+	m.mu.Lock()
+	fns := make([]func(RunEvent), 0, len(m.subs))
+	for _, fn := range m.subs {
+		fns = append(fns, fn)
+	}
+	m.mu.Unlock()
+	for _, fn := range fns {
+		fn(ev)
+	}
+}
+
+// RunText runs the one-agent workflow on input and returns the final agent text.
+// It blocks until the agent ends or ctx is done.
+func (m *Manager) RunText(ctx context.Context, workflow, input string) (string, error) {
+	if m.Text == nil {
+		return "", errors.New("text runs are not supported")
+	}
+	info, err := m.Info()
+	if err != nil {
+		return "", err
+	}
+	wf, err := m.Workflow(info, workflow)
+	if err != nil {
+		return "", err
+	}
+	return m.Text(ctx, info, wf, input)
 }
 
 // SetBase sets the context that cancels all runs (TUI quit).
@@ -88,19 +156,20 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (string, []string
 	if err != nil {
 		return "", warnings, err
 	}
-	m.launch(info, wf, st, func(ctx context.Context, r *Runner) error { return r.Run(ctx, st) })
+	m.launch(info, wf, st, false, func(ctx context.Context, r *Runner) error { return r.Run(ctx, st) })
 	return st.Run, warnings, nil
 }
 
 // ErrBusy is returned (wrapped) when a run is already active.
 var ErrBusy = errors.New("manager busy")
 
-// refuse returns an error when a run is active or the issue has a running or
-// paused run. A running state without an active goroutine is stale and does
-// not block. m.mu must be held.
+// refuse returns an error when the issue has an active or paused run. A running
+// state without an active goroutine is stale and does not block. m.mu must be held.
 func (m *Manager) refuse(info RepoInfo, issue int) error {
-	for id := range m.active {
-		return fmt.Errorf("%w: run %s is active", ErrBusy, id)
+	for id, a := range m.active {
+		if a.issue == issue {
+			return fmt.Errorf("%w: run %s is active for issue %d", ErrBusy, id, issue)
+		}
 	}
 	entries, _ := os.ReadDir(filepath.Dir(RunDir(info.Home, info.Name(), "x")))
 	for _, e := range entries {
@@ -108,8 +177,8 @@ func (m *Manager) refuse(info RepoInfo, issue int) error {
 		if err != nil || st.Issue != issue {
 			continue
 		}
-		// "running" here is stale: refuse returned above when a run is active in
-		// this process, so no goroutine owns it. Only a paused run blocks.
+		// "running" here is stale: the loop above found no active run of this
+		// issue, so no goroutine owns it. Only a paused run blocks.
 		if st.Status == "paused" {
 			return fmt.Errorf("issue %d already has run %s (%s)", issue, st.Run, st.Status)
 		}
@@ -118,16 +187,16 @@ func (m *Manager) refuse(info RepoInfo, issue int) error {
 }
 
 // launch registers the run as active and runs it. m.mu must be held.
-func (m *Manager) launch(info RepoInfo, wf *Workflow, st *RunState, do func(context.Context, *Runner) error) {
+func (m *Manager) launch(info RepoInfo, wf *Workflow, st *RunState, resumed bool, do func(context.Context, *Runner) error) {
 	parent := m.base
 	if parent == nil {
 		parent = context.Background()
 	}
 	ctx, cancel := context.WithCancel(parent)
 	if m.active == nil {
-		m.active = map[string]context.CancelFunc{}
+		m.active = map[string]activeRun{}
 	}
-	m.active[st.Run] = cancel
+	m.active[st.Run] = activeRun{cancel: cancel, issue: st.Issue}
 	r := m.NewRunner(info, wf, st)
 	go func() {
 		defer func() {
@@ -135,6 +204,7 @@ func (m *Manager) launch(info RepoInfo, wf *Workflow, st *RunState, do func(cont
 			m.mu.Lock()
 			delete(m.active, st.Run)
 			m.mu.Unlock()
+			m.emit(RunEvent{Run: st.Run, Status: st.Status, PR: st.PR, Reason: st.Reason})
 		}()
 		defer func() {
 			if p := recover(); p != nil {
@@ -146,6 +216,9 @@ func (m *Manager) launch(info RepoInfo, wf *Workflow, st *RunState, do func(cont
 				m.notify(st, wf)
 			}
 		}()
+		if resumed {
+			m.emit(RunEvent{Run: st.Run, Status: "running"})
+		}
 		err := do(ctx, r)
 		if err != nil && st.Status == "running" {
 			st.Status = "failed"
@@ -230,11 +303,12 @@ func (m *Manager) Resume(runID, answer string) error {
 		}
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	for id := range m.active {
-		return fmt.Errorf("%w: run %s is active", ErrBusy, id)
+	if _, ok := m.active[st.Run]; ok {
+		m.mu.Unlock()
+		return fmt.Errorf("%w: run %s is active", ErrBusy, st.Run)
 	}
-	m.launch(info, wf, st, func(ctx context.Context, r *Runner) error { return r.Resume(ctx, st, answer) })
+	m.launch(info, wf, st, true, func(ctx context.Context, r *Runner) error { return r.Resume(ctx, st, answer) })
+	m.mu.Unlock()
 	return nil
 }
 
@@ -300,8 +374,8 @@ func loadRun(info RepoInfo, runID string) (*RunState, error) {
 // waits up to wait for the goroutines to save it.
 func (m *Manager) Shutdown(wait time.Duration) {
 	m.mu.Lock()
-	for _, cancel := range m.active {
-		cancel()
+	for _, a := range m.active {
+		a.cancel()
 	}
 	m.mu.Unlock()
 	deadline := time.Now().Add(wait)

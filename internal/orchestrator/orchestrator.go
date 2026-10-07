@@ -38,9 +38,10 @@ type Hooks struct {
 }
 
 type finishedRun struct {
-	issue int
-	ask   bool
-	res   RunResult
+	issue   int
+	ask     bool
+	resumed bool
+	res     RunResult
 }
 
 // Orchestrator plans a milestone and runs one workflow run per issue. It uses
@@ -51,12 +52,11 @@ type Orchestrator struct {
 	r   Runner
 	h   Hooks
 
-	mu        sync.Mutex
-	roadmap   Roadmap
-	inFlight  map[int]string // issue -> run id; only acquire, setRunID, release and busy touch it
-	saturated bool           // the run manager refused the last start: it has no free slot
-	announce  bool           // send "started #N" notices (false until the first fill is done)
-	stop      chan struct{}
+	mu       sync.Mutex
+	roadmap  Roadmap
+	inFlight map[int]string // issue -> run id; only acquire, setRunID, release and busy touch it
+	announce bool           // send "started #N" notices (false until the first fill is done)
+	stop     chan struct{}
 }
 
 // New returns an Orchestrator. Workers is not defaulted: 0 means unlimited.
@@ -171,9 +171,6 @@ func (o *Orchestrator) planReady(started []int, special error) {
 	if o.cfg.Workers > 0 {
 		pr.Free = o.cfg.Workers - busy
 	}
-	if o.saturated {
-		pr.Free = 0
-	}
 	o.mu.Unlock()
 	o.h.PlanReady(pr)
 }
@@ -247,6 +244,8 @@ func shortWhy(err error) string {
 }
 
 func (o *Orchestrator) runOracle(ctx context.Context, input string) (string, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	h, err := o.r.Start(ctx, "roadmap", map[string]string{"input": input})
 	if err != nil {
 		return "", err
@@ -345,7 +344,6 @@ func (o *Orchestrator) candidate(i int) (issue int, startable, ok bool) {
 func (o *Orchestrator) fill(ctx context.Context, finished chan<- finishedRun) []int {
 	var started []int
 	o.mu.Lock()
-	o.saturated = false
 	notes := o.markBlocked()
 	o.mu.Unlock()
 	for i := 0; ctx.Err() == nil; i++ {
@@ -359,14 +357,13 @@ func (o *Orchestrator) fill(ctx context.Context, finished chan<- finishedRun) []
 		o.setStatus(i, StatusWip)
 		h, err := o.r.Start(ctx, o.cfg.Workflow, map[string]string{"issue": strconv.Itoa(issue)})
 		if errors.Is(err, flow.ErrBusy) {
-			// The manager has no free slot. Not a failure of the issue: keep it
-			// todo and try again after a run ends.
+			// The issue already has an active run (for example a manual one).
+			// Not a failure: keep it todo, try the next item.
 			o.release(issue)
 			o.mu.Lock()
 			o.roadmap.Items[i].Status = StatusTodo
-			o.saturated = true
 			o.mu.Unlock()
-			break
+			continue
 		}
 		if err != nil {
 			o.release(issue)
@@ -445,6 +442,10 @@ func (o *Orchestrator) watch(issue int, h RunHandle, finished chan<- finishedRun
 			if !send(finishedRun{issue: issue, ask: true}) {
 				return
 			}
+		case <-h.Resumed():
+			if !send(finishedRun{issue: issue, resumed: true}) {
+				return
+			}
 		case res := <-h.Done():
 			send(finishedRun{issue: issue, res: res})
 			return
@@ -456,7 +457,7 @@ func (o *Orchestrator) watch(issue int, h RunHandle, finished chan<- finishedRun
 func (o *Orchestrator) stopped() <-chan struct{} { return o.stop }
 
 func (o *Orchestrator) finish(f finishedRun) {
-	if !f.ask {
+	if !f.ask && !f.resumed {
 		o.release(f.issue)
 	}
 	o.mu.Lock()
@@ -464,6 +465,10 @@ func (o *Orchestrator) finish(f finishedRun) {
 	var notes []string
 	switch {
 	case it == nil:
+	case f.resumed:
+		if it.Status == StatusAsk {
+			it.Status = StatusWip
+		}
 	case f.ask:
 		// The run is alive and keeps its worktree and its slot.
 		it.Status = StatusAsk
