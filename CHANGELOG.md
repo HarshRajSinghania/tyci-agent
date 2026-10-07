@@ -7,10 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Config keys `compact_soft_limit` and `compact_hard_limit` (config.json, agents.json, agent frontmatter, flow roles) set the context notice and auto-compaction limits in tokens. Subagents and flow roles now compact automatically past the hard limit (#304).
 - Flow: role agents of a run are jobs named `<run-id>/<role>` (the `message` tool reaches them), and an `ask` answer can be `retry <note>` (the note goes into the next worker prompt) or `goto <state>` (#327).
 - Flow: the final review is posted as a PR review, and new PR comments from team members go back to the worker (#187).
 - TUI: new sidebar tab "Runs" shows recent flow runs with status, current state, role, time in state and last steps (#296).
 - Orchestrator: `workers > 1` now runs several issues at the same time, and the roadmap oracle order replaces `fallbackOrder` (#283).
+
+### Changed
+- Context notice now starts at 80% of the window (was 50%) and auto-compaction at 95% (was 85%) when no limit is set (#304).
 
 ### Fixed
 - TUI: the status line elapsed time ("bash 3.2s", "waiting for response 12.0s") keeps ticking while a picker, modal or other overlay is open (#319).
