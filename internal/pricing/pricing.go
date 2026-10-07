@@ -2,8 +2,10 @@
 // costs, and how many of them fit.
 //
 // Both answers come from the models.dev catalog already cached at
-// ~/.tyci/providers.json, so this package adds no network calls and no second
-// source of truth. What it does add is tolerance for a catalog that cannot
+// ~/.tyci/providers.json. The one exception is the nexos provider: its prices
+// and limits come from the nexos API, cached at ~/.tyci/nexos-models.json and
+// refreshed in the background, so a slow API never blocks the caller. What
+// this package also adds is tolerance for a catalog that cannot
 // answer: older tyci versions re-marshalled the catalog through a struct that
 // had no cost or limit fields, so an existing cache is likely to be silently
 // stripped of both. That case is reported as "unknown" rather than as zero —
@@ -76,6 +78,10 @@ func Reset() {
 	mu.Lock()
 	loaded, cat = false, nil
 	mu.Unlock()
+	nexosMu.Lock()
+	nexosLoaded, nexosModels = false, nil
+	nexosGen++
+	nexosMu.Unlock()
 }
 
 // Lookup returns the rates and limits for a model. provider may be empty, in
@@ -86,8 +92,21 @@ func Reset() {
 // catalog's display name, because the name shown in the status bar comes from
 // the user's model.json and need not be the catalog's id.
 func Lookup(provider, model string) (Rates, Limits) {
+	if model == "" {
+		return Rates{}, Limits{}
+	}
+	r, l := lookupCatalog(provider, model)
+	// Nexos prices and limits come from the nexos API. Without a provider the
+	// API is only asked when the catalog knows nothing about the model.
+	if provider == nexosProvider || (provider == "" && !r.Known()) {
+		r, l = overlayNexos(model, r, l)
+	}
+	return r, l
+}
+
+func lookupCatalog(provider, model string) (Rates, Limits) {
 	c := catalog()
-	if c == nil || model == "" {
+	if c == nil {
 		return Rates{}, Limits{}
 	}
 	if provider != "" {
