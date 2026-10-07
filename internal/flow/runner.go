@@ -197,6 +197,8 @@ func (r *Runner) run(ctx context.Context, st *RunState, again bool) (err error) 
 				Issue:         st.Issue,
 				PR:            st.PR,
 				Visit:         st.Visits[cur],
+				ArtifactDir:   artDir,
+				RunSoFar:      runSoFar(st, cur, r.RunDir),
 			}
 			key, session, runErr := r.Agents.Run(ctx, s.Agent, s.Task, rc)
 			ended := time.Now()
@@ -206,6 +208,9 @@ func (r *Runner) run(ctx context.Context, st *RunState, again bool) (err error) 
 			}
 			if s.Agent == "worker" {
 				st.Note = ""
+			}
+			if errors.Is(runErr, ErrNoArtifact) {
+				return r.pauseNoArtifact(ctx, st, cur, s.Agent, art, started, ended, session, runErr)
 			}
 			if runErr != nil {
 				key = "error"
@@ -278,6 +283,30 @@ func (r *Runner) run(ctx context.Context, st *RunState, again bool) (err error) 
 				fmt.Errorf("state %q has no check, agent, ask or end", cur))
 		}
 	}
+}
+
+// pauseNoArtifact records the agent step and pauses the run in the "ask"
+// state with the reason "no artifact from <role>".
+func (r *Runner) pauseNoArtifact(ctx context.Context, st *RunState, cur, role, art string, started, ended time.Time, session string, runErr error) error {
+	askState, ok := r.WF.States["ask"]
+	if !ok || askState.Ask == "" {
+		return r.fail(ctx, st, runErr.Error(), runErr)
+	}
+	st.History = append(st.History, Step{
+		Seq:       len(st.History) + 1,
+		State:     cur,
+		Kind:      "agent",
+		Key:       "error",
+		To:        "ask",
+		StartedAt: started,
+		EndedAt:   ended,
+		Role:      role,
+		Session:   session,
+		Error:     runErr.Error(),
+		Artifact:  art,
+	})
+	st.Current = "ask"
+	return r.pause(st, askState.Ask, runErr.Error())
 }
 
 // readPRFile copies the PR number from <runDir>/pr (written by push.sh).

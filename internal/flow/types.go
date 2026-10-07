@@ -164,6 +164,12 @@ type RunContext struct {
 	Issue         int
 	PR            int
 	Visit         int
+	// ArtifactDir is the absolute artifact dir of this step; the agent must
+	// write report.md there. Empty when the runner has no run dir.
+	ArtifactDir string
+	// RunSoFar lists the steps since the last visit of this state (all steps
+	// on the first visit) with their artifact files.
+	RunSoFar string
 	// Stats is filled by the agent runner when the agent ends. Nil: not wanted.
 	Stats *StepStats
 }
