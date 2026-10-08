@@ -120,3 +120,27 @@ func TestProviderNeedsPrices(t *testing.T) {
 		t.Fatal("a provider absent from the catalog should report false")
 	}
 }
+
+// Providers that share a model id can disagree on rates and limits. An empty
+// provider walks the catalog map, whose iteration order is random, so the
+// returned entry must not depend on that order.
+func TestLookup_EmptyProviderIsStableWhenModelIsShared(t *testing.T) {
+	withCatalog(t, `{
+	  "zeta": {"id":"zeta","name":"Zeta","models":{
+	    "shared-model":{"id":"shared-model","name":"Shared",
+	      "cost":{"input":9,"output":9},"limit":{"context":9000,"output":90}}}},
+	  "alpha": {"id":"alpha","name":"Alpha","models":{
+	    "shared-model":{"id":"shared-model","name":"Shared",
+	      "cost":{"input":1,"output":2},"limit":{"context":1000,"output":10}}}}
+	}`)
+	want, wantLimits := Lookup("", "shared-model")
+	if want.Input != 1 || want.Output != 2 || wantLimits.Context != 1000 || wantLimits.Output != 10 {
+		t.Fatalf("empty provider should use the first provider in sorted order (alpha), got %+v %+v", want, wantLimits)
+	}
+	for i := 0; i < 30; i++ {
+		r, l := Lookup("", "shared-model")
+		if r != want || l != wantLimits {
+			t.Fatalf("call %d returned %+v %+v, want %+v %+v", i, r, l, want, wantLimits)
+		}
+	}
+}
