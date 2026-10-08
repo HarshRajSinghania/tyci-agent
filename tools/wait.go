@@ -8,6 +8,9 @@ import (
 	"time"
 )
 
+// unknownJobIDError is the failure for a job_id the registry does not know.
+const unknownJobIDError = "unknown job_id — ids come from a backgrounded bash command, subagent(async=true), or resume; use the exact string that result gave you"
+
 // MaxWaitSeconds and MinWaitSeconds bound the "seconds" input. A caller that
 // asks for more/less than this range is clamped, not rejected — see Run.
 const MaxWaitSeconds = 1800
@@ -142,6 +145,11 @@ func (t *WaitTool) setWaiter(w JobWaiter) {
 func (t *WaitTool) Run(ctx context.Context, input map[string]any) ToolResult {
 	jobID, _ := input["job_id"].(string)
 
+	// A wait blocks without streaming, so the watchdog would read the caller
+	// as idle. Its return counts as activity for the caller's own job.
+	callerJobID, _ := ctx.Value(JobIDCtxKey{}).(string)
+	defer touchJobActivity(callerJobID)
+
 	secRaw, hasSeconds := input["seconds"]
 	if !hasSeconds && jobID == "" {
 		return validationResult("seconds is required for a plain wait (or pass job_id to wait for a job)")
@@ -188,9 +196,22 @@ func (t *WaitTool) Run(ctx context.Context, input map[string]any) ToolResult {
 		if waiter == nil {
 			return ToolResult{Type: "result", Success: false, Error: "job registry unavailable; omit job_id to just wait N seconds"}
 		}
+		// Inside a child agent, wait follows the same subtree rule as kill_job.
+		// An id the lister does not know cannot be checked against the
+		// subtree, so a child gets the unknown-id error for it, not a refusal.
+		// Without a lister this fails closed: no id is known.
+		lister := getJobLister()
+		fullID, known := resolveListedJob(lister, jobID)
+		inChild := ctx.Value(SubagentSinkCtxKey{}) != nil
+		if inChild && !known {
+			return ToolResult{Type: "result", Success: false, Error: unknownJobIDError}
+		}
+		if !inOwnSubtree(ctx, callerJobID, fullID, lister) {
+			return ToolResult{Type: "result", Success: false, Error: fmt.Sprintf("refused: job %q is not within your own subtree — inside a subagent you may wait only on jobs you started (your job id is %q)", jobID, callerJobID)}
+		}
 		status, ok, interrupted := t.waitForJob(ctx, waiter, jobID, time.Duration(seconds)*time.Second)
 		if !ok {
-			return ToolResult{Type: "result", Success: false, Error: "unknown job_id — ids come from a backgrounded bash command, subagent(async=true), or resume; use the exact string that result gave you"}
+			return ToolResult{Type: "result", Success: false, Error: unknownJobIDError}
 		}
 		if interrupted {
 			return ToolResult{

@@ -12,6 +12,9 @@ import (
 // encoded session dir and verifies ResumeEntries returns both, newest
 // first, with the first user prompt decoded.
 func TestResumeEntries_BasicList(t *testing.T) {
+	// The session dir is under $HOME. A private home keeps parallel test
+	// runs from removing each other's files in the shared dir.
+	isolatedHome(t)
 	// A private cwd keeps other test runs out of this directory. The
 	// projectRoot field marks the headers as new-format: a header without it
 	// is a legacy file, and migrateLegacyDirs in a concurrent run would move it.

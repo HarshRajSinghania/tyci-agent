@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - TUI: the `main` row in the sidebar Tasks tab can be selected. Enter or a click on a subagent row shows that agent's conversation in the main window, and it updates live. The header names the viewed agent. Enter on `main`, or Esc, shows the main conversation again with its scroll position. Input still goes to the main conversation. Resumed jobs, promoted /btw jobs and /btw evaluations show their conversation the same way (#453).
 
 ### Changed
+- Subagents: a bash command that runs longer than 30s moves to the background inside a subagent too. The completion notice goes to the subagent that started the command (#435).
+- Subagents: a subagent that lists `bash` in its `tools:` also gets `wait` and `kill_job`. It can wait for or stop only the jobs it started (#435).
 - TUI: the Runs tab shows one line per run, for example `#472 done (merged) 12m3s`, with the total cost at the end. Active runs come first, newest start first. Finished runs follow, newest end first. Enter or a click expands a run and shows every step visit with its duration and cost. The tab row is as wide as its labels, not split evenly over the sidebar (#310).
 - TUI: Enter or a click on a subagent row in the Tasks tab no longer opens the read-only transcript modal. It shows the live conversation in the main window instead (#453).
 - `tyci run --prompt` prints only the final answer on stdout, with one trailing newline. Tool calls and progress are no longer printed; errors, retry and fallback notices go to stderr (#189).
@@ -30,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 Existing agents.json, .tyci.json and .tyci/model.json files are ignored (not deleted, not migrated).
 
 ### Fixed
+- Subagents: when a subagent ends, the background commands it started are stopped. No process stays after the subagent ends (#435).
 - Flow: the README states the keys that the `post_review` check state of a custom workflow needs: a `default` key, or one key for each answer of `post_review.sh` (`ok`, `skip` and `fail`). The runner does not change (#402).
 - Flow: a new issue worktree runs the repository's executable `bin/worktree-setup.sh`. Unlike `bin/worktree.sh`, tyci does not write `.env.worktree` or set `COMPOSE_PROJECT_NAME` before the script runs. A failing or cancelled script stops the run before it starts. The run removes the worktree and its branch, so a retry works (#449).
 - TUI: a click on the sidebar Sessions tab no longer freezes the UI. The session list loads in the background and is cached for 5 seconds. The Runs tab detects the repository once per session. Closing the resume picker during a turn no longer blocks the event loop (#462).

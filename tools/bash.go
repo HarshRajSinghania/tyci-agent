@@ -115,11 +115,11 @@ func (t *BashTool) Run(ctx context.Context, input map[string]any) ToolResult {
 
 	runInBg := boolParam(input, "run_in_background", false)
 	note := ""
-	if !backgroundAllowed(ctx) {
+	if !BackgroundBashEnabled() {
 		bgAfterSec = 0
 		if runInBg {
 			runInBg = false
-			note = "\n\n[note: run_in_background was requested, but background commands are unavailable here (one-shot run, or inside a subagent) — ran in the foreground instead]"
+			note = "\n\n[note: run_in_background was requested, but background commands are unavailable here (one-shot run) — ran in the foreground instead]"
 		}
 	}
 
@@ -268,11 +268,15 @@ func (t *BashTool) handoff(ctx context.Context, run *bashRun, label string, wait
 			BashFirstProgressNoticeSec*time.Second, BashProgressNoticeEverySec*time.Second, parentID)
 
 		output := strings.TrimRight(run.out.result(), "\n")
-		notifyToParent(parentID, bashNotice(jobID, label, waitErr, killed, run.out.total()))
+		// A command that its parent's end stopped has no reader left. Its
+		// notice would go to the main queue, which never started the command.
+		if !killed || !parentEnded(parentID) {
+			notifyToParent(parentID, bashNotice(jobID, label, waitErr, killed, run.out.total()))
+		}
 
 		switch {
 		case killed:
-			return output, false, fmt.Errorf("background command was stopped before it finished (kill_job, or the %ds background limit). Partial output:\n%s", BashBackgroundLimitSec, output)
+			return output, false, fmt.Errorf("background command was stopped before it finished (kill_job, the %ds background limit, or its parent job ended). Partial output:\n%s", BashBackgroundLimitSec, output)
 		case waitErr != nil:
 			return output, false, errors.New(formatExitError(waitErr, output))
 		default:
@@ -290,6 +294,24 @@ func (t *BashTool) handoff(ctx context.Context, run *bashRun, label string, wait
 	waitedNote := "moved to the background"
 	if waited > 0 {
 		waitedNote = fmt.Sprintf("still running after %ds, so it was moved to the background", waited)
+	}
+	// A command started inside a job stops when that job ends. The agent of
+	// such a job gets no notice unless it makes another tool call, so it must
+	// collect the result itself before it answers. parentID also covers a
+	// resumed subagent, which has no SubagentSinkCtxKey.
+	if parentID != "" || ctx.Value(SubagentSinkCtxKey{}) != nil {
+		return ToolResult{
+			Type:    "result",
+			Success: true,
+			Content: fmt.Sprintf(
+				"Command %s as job_id=%q (%s).\n\n"+
+					"Do NOT run this command again — it is still running, and a second copy would race with the first. "+
+					"Your background commands stop when you return your answer. Do other work that does not depend on "+
+					"this result. Then call wait(job_id=%q) to read the output before you return your answer, or stop "+
+					"it early with kill_job(job_id=%q).",
+				waitedNote, handle.ID(), label, handle.ID(), handle.ID(),
+			),
+		}, true
 	}
 	return ToolResult{
 		Type:    "result",
