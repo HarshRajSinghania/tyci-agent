@@ -202,7 +202,7 @@ func (r *Runner) run(ctx context.Context, st *RunState, again bool) (err error) 
 			if c, capped := recoveryCaps[cur]; capped && newVisit {
 				capKey := cur + "@" + failed.State
 				if st.Visits[capKey] >= c.max {
-					if err := r.skipCapped(st, s, cur, c.key, fmt.Sprintf("%s already ran %d time(s) for the failed step %s", s.Agent, c.max, failed.State)); err != nil {
+					if err := r.skipCapped(st, s, cur, c.key, fmt.Sprintf("%s already ran %d time(s) for the failed step %s", cur, c.max, failed.State)); err != nil {
 						return err
 					}
 					continue
@@ -243,7 +243,11 @@ func (r *Runner) run(ctx context.Context, st *RunState, again bool) (err error) 
 				ArtifactDir:   artDir,
 				RunSoFar:      runSoFar(st, cur, r.RunDir),
 			}
-			if _, capped := recoveryCaps[cur]; capped {
+			// The failed-step context goes to the recovery roles (as before #385)
+			// and to the recovery states. Both are looked up in recoveryCaps.
+			_, recoveryRole := recoveryCaps[s.Agent]
+			_, recoveryState := recoveryCaps[cur]
+			if recoveryRole || recoveryState {
 				rc.Failed, rc.FailedKey = failed.State, failed.Key
 				if failed.Artifact != "" && r.RunDir != "" {
 					rc.FailedDir = filepath.Join(r.RunDir, "artifacts", failed.Artifact)

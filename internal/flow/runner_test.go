@@ -35,10 +35,12 @@ type fakeAgents struct {
 	keys  map[string][]string
 	errs  map[string]error
 	calls []string
+	rcs   []RunContext
 }
 
 func (f *fakeAgents) Run(_ context.Context, role, _ string, rc RunContext) (string, string, error) {
 	f.calls = append(f.calls, rc.StateName)
+	f.rcs = append(f.rcs, rc)
 	if err, ok := f.errs[rc.StateName]; ok && err != nil {
 		return "", "", err
 	}
@@ -432,6 +434,9 @@ func TestRunner_RecoveryCapFollowsStateName(t *testing.T) {
 	if len(agents.calls) != 2 || st.Current != "ask" {
 		t.Fatalf("agent calls = %v, current %q, want 2 calls and ask", agents.calls, st.Current)
 	}
+	if rc := agents.rcs[0]; rc.Failed != "check" || rc.FailedKey != "fail" {
+		t.Fatalf("state fixer got Failed %q key %q, want check and fail", rc.Failed, rc.FailedKey)
+	}
 }
 
 // #385: a role name alone gives no cap. A state named repair runs its agent
@@ -452,5 +457,8 @@ func TestRunner_RecoveryCapNotGivenByRoleName(t *testing.T) {
 	}
 	if st.Status != "done" || len(agents.calls) != 3 {
 		t.Fatalf("status %q, agent calls = %v, want done and 3 calls", st.Status, agents.calls)
+	}
+	if rc := agents.rcs[0]; rc.Failed != "check" || rc.FailedKey != "fail" {
+		t.Fatalf("role fixer got Failed %q key %q, want check and fail", rc.Failed, rc.FailedKey)
 	}
 }
