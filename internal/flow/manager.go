@@ -271,6 +271,9 @@ func (m *Manager) notify(st *RunState, wf *Workflow) {
 		}
 		text += " paused: " + msg
 		if keys := answerKeys(wf, st.Current); len(keys) > 0 {
+			if st.Ask != nil && st.Ask.Proposal != "" {
+				keys = append([]string{"apply", "reject"}, keys...)
+			}
 			text += " (answer with workflow_resume: " + strings.Join(keys, "|") + "|retry <note>|goto <state>)"
 		}
 	default:
@@ -323,6 +326,9 @@ func (m *Manager) Resume(runID, answer string) error {
 	if err != nil {
 		return err
 	}
+	if (answer == "apply" || answer == "reject") && st.Ask != nil && st.Ask.Proposal != "" {
+		return m.answerProposal(info, wf, st, answer)
+	}
 	// "resume" continues a run paused at start-up at its saved state.
 	saved := resumeState(st)
 	if strings.TrimSpace(answer) == "resume" && saved != "" {
@@ -356,6 +362,66 @@ func (m *Manager) Resume(runID, answer string) error {
 		m.markAdoptable(st.Run)
 	}
 	m.mu.Unlock()
+	return nil
+}
+
+// answerProposal applies or rejects the workflow proposal of a paused run.
+// The run stays paused and waits for its normal answer; a new notice says so.
+func (m *Manager) answerProposal(info RepoInfo, wf *Workflow, st *RunState, answer string) error {
+	if answer == "apply" && wf.Source != "" && wf.Source != "builtin" && !strings.HasPrefix(wf.Source, info.Root+string(filepath.Separator)) {
+		return fmt.Errorf("the run uses %s, outside the repository: a proposal can change only the repository's .tyci/ files or the builtin workflow", wf.Source)
+	}
+	// Reserve the run, so no other answer runs or saves it at the same time.
+	parent := m.base
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
+	defer cancel()
+	m.mu.Lock()
+	if _, ok := m.active[st.Run]; ok {
+		m.mu.Unlock()
+		return fmt.Errorf("%w: run %s is active", ErrBusy, st.Run)
+	}
+	if m.active == nil {
+		m.active = map[string]activeRun{}
+	}
+	m.active[st.Run] = activeRun{cancel: cancel, issue: st.Issue}
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		delete(m.active, st.Run)
+		m.mu.Unlock()
+	}()
+	// Another answer can have changed the run before the reservation.
+	proposal := st.Ask.Proposal
+	cur, err := loadRun(info, st.Run)
+	if err != nil {
+		return err
+	}
+	if cur.Status != "paused" || cur.Ask == nil || cur.Ask.Proposal != proposal {
+		return fmt.Errorf("run %s changed, its proposal is no longer open", st.Run)
+	}
+	st = cur
+	runDir := RunDir(info.Home, info.Name(), st.Run)
+	note := " Workflow proposal rejected."
+	if answer == "apply" {
+		url, err := ApplyProposal(ctx, info, st, st.Ask.Proposal)
+		if err != nil {
+			return fmt.Errorf("apply the workflow proposal: %w", err)
+		}
+		note = " Workflow proposal applied: " + url
+	} else if err := RejectProposal(runDir, st.Ask.Proposal); err != nil {
+		return fmt.Errorf("reject the workflow proposal: %w", err)
+	}
+	st.Ask.Message, _, _ = strings.Cut(st.Ask.Message, proposalWaits)
+	st.Ask.Message += note
+	st.Ask.Proposal = ""
+	st.UpdatedAt = time.Now()
+	if err := (&Store{Dir: runDir}).Save(st); err != nil {
+		return err
+	}
+	m.notify(st, wf)
 	return nil
 }
 
