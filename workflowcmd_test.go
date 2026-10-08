@@ -244,7 +244,7 @@ func TestWorkflowRunCLI_ExplicitPathBypassesDiscovery(t *testing.T) {
 	wantStderr := "tyci: this project is not trusted — project-local hooks (.tyci/hooks.json), " +
 		"Lua tools (.tyci/tools/*.lua), the local cron dir, and mcp.json are skipped this session. " +
 		"Global ~/.tyci/ content still loads as usual. Run tyci in an interactive mode " +
-		"(console/tui) in this directory to be asked, or edit ~/.tyci/trust.json directly.\n"
+		"(tui) in this directory to be asked, or edit ~/.tyci/trust.json directly.\n"
 	if stderr.String() != wantStderr {
 		t.Fatalf("workflow run stderr = %q, want exactly %q", stderr.String(), wantStderr)
 	}
@@ -361,7 +361,7 @@ func writeWorkflowEnvProbe(t *testing.T, project string) (scriptPath string) {
 // TestWorkflowRunCLI_TrustedProject_LoadsProjectLocalHooksAndLuaTools is
 // F28's positive case: `tyci workflow run` on a trusted project must load
 // project-local hooks (.tyci/hooks.json) and Lua tools (.tyci/tools/*.lua)
-// exactly like `tyci run`/console/tui already do via initCommon — before
+// exactly like `tyci run`/tui already do via initCommon — before
 // the fix, workflowcmd.go called only registerProviders(), so a workflow
 // script's tyci.run_tool calls silently ran with hooks off and no
 // project-local tools regardless of trust.

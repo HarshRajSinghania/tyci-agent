@@ -86,42 +86,6 @@ func fmtRate(tokens int, genDur time.Duration) string {
 	return fmt.Sprintf("%.1f", float64(tokens)/genDur.Seconds())
 }
 
-// buildStatLine returns the body of the run-mode [STAT] line — just the
-// field list, no time and no rate. The elapsed time is rendered on the
-// right by Minimal's renderLocked() machinery (so columns stay aligned
-// with the other lines) and the caller is responsible for setting
-// blockStart so that elapsed equals the round's total duration.
-func buildStatLine(usage stream.Usage) string {
-	inNew := usage.Input - usage.CacheRead
-	if inNew < 0 {
-		inNew = 0
-	}
-	parts := fmt.Sprintf("in=%d", inNew)
-	if usage.CacheRead > 0 {
-		parts += fmt.Sprintf(" (+%d cache)", usage.CacheRead)
-	}
-	parts += fmt.Sprintf(" out=%d", usage.Output)
-	if usage.Reasoning > 0 {
-		parts += fmt.Sprintf(" r=%d", usage.Reasoning)
-	}
-	if usage.CacheWrite > 0 {
-		parts += fmt.Sprintf(" cache_w=%d", usage.CacheWrite)
-	}
-	return parts
-}
-
-// buildStatRate returns the "tok/s=N.N" suffix for the [STAT] line.
-// Exposed separately so the caller can compute it from the same
-// stats.Duration that drives the right-aligned time, keeping the
-// displayed rate and the displayed time in lockstep.
-func buildStatRate(usage stream.Usage, stats stream.Stats) string {
-	var rate float64
-	if stats.Duration > 0 {
-		rate = float64(usage.Output) / stats.Duration.Seconds()
-	}
-	return fmt.Sprintf("tok/s=%.1f", rate)
-}
-
 // usageTokens builds the token-count part (left side).
 // in= shows actual new input tokens (total minus cache read), with cache read in brackets.
 // ctx= shows total context (Input + Output).
@@ -158,38 +122,6 @@ func timingTokens(usage stream.Usage, stats stream.Stats) string {
 	)
 }
 
-// buildAlignedUsageLine builds a line with token info left-aligned and timing
-// info right-aligned, padded to fill the given width.
-// If the terminal is too narrow for alignment, falls back to concatenation.
-func buildAlignedUsageLine(width int, prefix string, usage stream.Usage, stats stream.Stats) string {
-	left := prefix + " " + usageTokens(usage)
-	right := timingTokens(usage, stats)
-	if width >= visibleWidth(left)+visibleWidth(right) {
-		return left + strings.Repeat(" ", width-visibleWidth(left)-visibleWidth(right)) + right
-	}
-	// Narrow terminal: just concatenate with one space
-	return left + " " + right
-}
-
-// buildCostsLine formats cumulative session token counts.
-// Shows total tokens across all iterations in the session.
-// Order: main counts (in, out), then cache details (cin, cout).
-func buildCostsLine(usage stream.Usage) string {
-	inActual := usage.Input - usage.CacheRead
-	if inActual < 0 {
-		inActual = 0
-	}
-	parts := fmt.Sprintf("in=%d", inActual)
-	parts += fmt.Sprintf(" out=%d", usage.Output)
-	if usage.CacheRead > 0 {
-		parts += fmt.Sprintf(" cin=%d", usage.CacheRead)
-	}
-	if usage.CacheWrite > 0 {
-		parts += fmt.Sprintf(" cout=%d", usage.CacheWrite)
-	}
-	return parts
-}
-
 // BuildUsageLineNoTiming formats usage without timing stats.
 // Used for session totals where timing (per-request) is not meaningful.
 // in= shows actual new input tokens (total minus cache read).
@@ -208,4 +140,87 @@ func BuildUsageLineNoTiming(usage stream.Usage) string {
 		parts += fmt.Sprintf(" cout=%d", usage.CacheWrite)
 	}
 	return parts
+}
+
+// clearLine is the ANSI sequence that erases the rest of the line.
+const clearLine = "\033[K"
+
+// wrapText splits long lines into multiple lines to fit within maxWidth.
+// startCol is the number of columns already used on the first line (e.g., prompt).
+// It preserves ANSI escape sequences and adds clearLine after each newline.
+func wrapText(s string, maxWidth, startCol int) string {
+	if maxWidth <= 0 {
+		return s
+	}
+
+	// Tokenize: split into visible characters, escape sequences, and newlines.
+	type token struct {
+		isEscape bool // true for ANSI escape sequences
+		value    string
+	}
+	var tokens []token
+	var esc strings.Builder
+	inEscape := false
+	for _, r := range s {
+		if inEscape {
+			esc.WriteRune(r)
+			if r == 'm' || r == 'K' || r == 'H' || r == 'J' {
+				tokens = append(tokens, token{isEscape: true, value: esc.String()})
+				esc.Reset()
+				inEscape = false
+			}
+			continue
+		}
+		if r == 0x1b {
+			inEscape = true
+			esc.WriteRune(r)
+			continue
+		}
+		if r == '\n' {
+			tokens = append(tokens, token{isEscape: false, value: "\n"})
+			continue
+		}
+		tokens = append(tokens, token{isEscape: false, value: string(r)})
+	}
+	if inEscape && esc.Len() > 0 {
+		// Incomplete escape sequence at end - include it anyway
+		tokens = append(tokens, token{isEscape: true, value: esc.String()})
+		esc.Reset()
+	}
+
+	// Assemble output lines from tokens, wrapping at maxWidth visible chars.
+	var result strings.Builder
+	var lineTokens []token   // tokens for the current output line
+	visibleCount := startCol // account for the starting column offset
+
+	flushLine := func() {
+		for _, t := range lineTokens {
+			result.WriteString(t.value)
+		}
+		lineTokens = nil
+		visibleCount = 0
+	}
+
+	for _, tok := range tokens {
+		if tok.isEscape {
+			// Escape sequences stay with the current line
+			lineTokens = append(lineTokens, tok)
+			continue
+		}
+		if tok.value == "\n" {
+			flushLine()
+			result.WriteByte('\n')
+			continue
+		}
+		// Visible character
+		if visibleCount == maxWidth {
+			flushLine()
+			result.WriteString(clearLine)
+			result.WriteByte('\n')
+		}
+		lineTokens = append(lineTokens, tok)
+		visibleCount++
+	}
+	flushLine()
+	return result.String()
 }

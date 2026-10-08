@@ -62,7 +62,7 @@ type Engine struct {
 // only caller of NewEngine in this repo — the exported RunWorkflow below
 // also calls it, but has no caller of its own today) wires all four up
 // itself, trust-gated the same way main.go's initCommon does for
-// `run`/`console`/`tui`/cron (commands.go's setupProjectLocalEnv, shared by
+// `run`/`tui`/cron (commands.go's setupProjectLocalEnv, shared by
 // both), before ever calling NewEngine — so by the time a script's
 // tyci.run_tool reaches tools.RunTool via e.ctx, the same project-local
 // content initCommon would have loaded is already in place (or correctly

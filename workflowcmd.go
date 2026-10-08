@@ -50,7 +50,7 @@ discovery falls back to the global ~/.tyci/agents directory only. This is a
 one-shot CLI invocation (like "tyci run"), so the trust decision never
 blocks on an interactive prompt: an unknown project is treated as untrusted.
 
-Like "tyci run"/"console"/"tui", this command loads project-local hooks
+Like "tyci run"/"tui", this command loads project-local hooks
 (.tyci/hooks.json), project-local Lua tools (.tyci/tools/*.lua), the local
 cron dir, and connects MCP servers (.tyci/mcp.json) — all gated on the same
 trust decision this command already makes for script discovery (see
@@ -99,7 +99,7 @@ connect, same as for "tyci run".`,
 		}
 
 		// Every other agent-running path (initCommon, used by `run`/
-		// `console`/`tui`) registers providers before anything tries to
+		// `tui`) registers providers before anything tries to
 		// resolve a model. Without this, session:await() fails with "model
 		// not found" unless the script happens to call tyci.models() first
 		// (which has the side effect of registering providers) — an easy
@@ -107,7 +107,7 @@ connect, same as for "tyci run".`,
 		registerProviders()
 
 		// Project-local hooks/Lua tools/cron dir/MCP (F28): the same
-		// environment initCommon wires up for `run`/`console`/`tui`, gated
+		// environment initCommon wires up for `run`/`tui`, gated
 		// on the same `trusted` value decided above rather than deciding
 		// trust again here (see setupProjectLocalEnv's doc comment on why
 		// that would risk two different answers and a duplicate warning).
@@ -213,7 +213,7 @@ func warnProjectUntrusted(discoveredByName bool) {
 		msg += ", and project-local workflow scripts (.tyci/agents/*.lua) are not discoverable by name"
 	}
 	msg += ". Global ~/.tyci/ content still loads as usual. Run tyci in an interactive mode " +
-		"(console/tui) in this directory to be asked, or edit ~/.tyci/trust.json directly."
+		"(tui) in this directory to be asked, or edit ~/.tyci/trust.json directly."
 	fmt.Fprintln(os.Stderr, msg)
 }
 
