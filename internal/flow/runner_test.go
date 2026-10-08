@@ -412,3 +412,45 @@ func TestRunner_PauseShowsLastStepAndStderr(t *testing.T) {
 		t.Fatalf("got %q", st.Ask.Message)
 	}
 }
+
+// #385: the recovery caps follow the state name. A state named fixer is capped
+// even when its agent has another role name: the fixer runs twice, then ask.
+func TestRunner_RecoveryCapFollowsStateName(t *testing.T) {
+	wf := &Workflow{Name: "demo", Start: "check", States: map[string]State{
+		"check": {Check: "x.sh", On: map[string]string{"fail": "fixer", "go": "end"}},
+		"fixer": {Agent: "repair", On: map[string]string{"ok": FailedTarget, "failed": "ask"}},
+		"ask":   {Ask: "help"},
+		"end":   {End: true},
+	}}
+	checks := &fakeChecks{keys: map[string][]string{"x.sh": {"fail", "fail", "fail", "go"}}}
+	agents := &fakeAgents{keys: map[string][]string{"fixer": {"ok", "ok"}}}
+	r := &Runner{WF: wf, Checks: checks, Agents: agents, Store: &memStore{}}
+	st := newRun("check")
+	if err := r.Run(context.Background(), st); !errors.Is(err, ErrPaused) {
+		t.Fatalf("err = %v, want ErrPaused", err)
+	}
+	if len(agents.calls) != 2 || st.Current != "ask" {
+		t.Fatalf("agent calls = %v, current %q, want 2 calls and ask", agents.calls, st.Current)
+	}
+}
+
+// #385: a role name alone gives no cap. A state named repair runs its agent
+// fixer once for each failed check.
+func TestRunner_RecoveryCapNotGivenByRoleName(t *testing.T) {
+	wf := &Workflow{Name: "demo", Start: "check", States: map[string]State{
+		"check":  {Check: "x.sh", On: map[string]string{"fail": "repair", "go": "end"}},
+		"repair": {Agent: "fixer", On: map[string]string{"ok": FailedTarget, "failed": "ask"}},
+		"ask":    {Ask: "help"},
+		"end":    {End: true},
+	}}
+	checks := &fakeChecks{keys: map[string][]string{"x.sh": {"fail", "fail", "fail", "go"}}}
+	agents := &fakeAgents{keys: map[string][]string{"repair": {"ok", "ok", "ok"}}}
+	r := &Runner{WF: wf, Checks: checks, Agents: agents, Store: &memStore{}}
+	st := newRun("check")
+	if err := r.Run(context.Background(), st); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if st.Status != "done" || len(agents.calls) != 3 {
+		t.Fatalf("status %q, agent calls = %v, want done and 3 calls", st.Status, agents.calls)
+	}
+}
