@@ -102,7 +102,7 @@ func (m mapResolver) Resolve(spec string) (connector.ModelClient, error) {
 // a map-backed ToolRunner.
 //
 // This is the test that could not have been written before this stage: the
-// loop it exercises used to live inside runTUI / runInteractive / runPrompt,
+// loop it exercises used to live inside the TUI and one-shot run frontends,
 // each of which needs a display, a terminal and a cobra command to reach.
 func TestConductor_HeadlessConversation(t *testing.T) {
 	client := &connectortest.Fake{

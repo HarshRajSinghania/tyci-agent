@@ -496,7 +496,7 @@ minutes:
 
 ### Display Modes
 
-- **run** — Plain text: only the final answer on stdout; errors and notices on stderr
+- **run** — Plain text: only the final answer on stdout; errors, retry and fallback notices on stderr
 - **tui** — Bubble Tea TUI with split-pane, model picker, mouse support
 
 #### `tyci completion`

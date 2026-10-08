@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
-- `tyci run --prompt` prints only the final answer on stdout, with one trailing newline. Tool calls and progress are no longer printed; errors and notices go to stderr (#189).
+- `tyci run --prompt` prints only the final answer on stdout, with one trailing newline. Tool calls and progress are no longer printed; errors, retry and fallback notices go to stderr (#189).
 
 ### Removed
 - `tyci console` and the `minimal`, `normal` and `interactive` display modes. Use `tyci tui` (interactive) or `tyci run --prompt` (one-shot) (#189).
