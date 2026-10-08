@@ -17,7 +17,7 @@ and a rich TUI — all configurable through a simple JSON model registry.
 - **Display modes** — `tui` (Bubble Tea terminal UI) and `run` (plain text, one-shot)
 - **Session persistence** — automatic save/resume of conversations (JSONL)
 - **Streaming** — real-time thought, text, and tool output streaming
-- **Agent configuration** — named agent presets with model and fallback assignments
+- **Agent definitions** — markdown agent files with YAML frontmatter, plus three builtin agents
 - **Provider registration** — `tyci provider add` / `provider refresh` CLI to add or sync providers without editing JSON manually
 
 ## Installation
@@ -62,6 +62,7 @@ make install
 
 - Config: `~/.tyci/config.json` (and `.tyci/config.json` for trusted projects)
 - Worktrees: `~/.tyci/worktrees/<repo>/issue-N`
+- Setup script: if the file `bin/worktree-setup.sh` in the repository is executable, tyci runs it once in the new worktree. If the script fails or the run is cancelled, the run stops and tyci removes the worktree and its branch.
 - Run state: `~/.tyci/runs/<repo>/<run>/state.json`
 - Run usage: agent steps in `state.json` carry `stats` (tokens, cost, turns); `workflow_status` and the Runs tab show it
 - Run artifacts: `~/.tyci/runs/<repo>/<run>/artifacts/NNN-<state>/` (one dir per step; checks write `output.log`, agents must write `report.md`)
@@ -76,7 +77,7 @@ saved state in the same worktree), `stop`, or nothing: a run without an answer s
 A paused run blocks a new run for its issue. The orchestrator watches the paused runs (they
 count as workers) and sees how each one ends after the answer, so it never starts a second run
 for the issue. An answer `resume` is refused while `orchestrator.workers` runs are active. The notice
-names the limit. The run stays paused until you answer again. A run that cannot pause (its workflow has no `ask` state) fails, and the chat
+names the limit. An apply or reject of a workflow proposal counts as an active run, so it takes a worker slot too. The run stays paused until you answer again. A run that cannot pause (its workflow has no `ask` state) fails, and the chat
 shows a notice for it. With no unfinished runs, start-up does not ask. A `workflow_start` of an issue whose `running` run has
 a dead owner (another tyci process stopped) still resumes it. The resumed run counts as a worker. When `orchestrator.workers` runs are active, the start is refused and the run stays stale. A `workflow_start` of an issue whose `running` run has a live owner (another tyci process) is refused. A run resumed 3 times, or a run whose worktree is gone, pauses for an answer.
 
@@ -100,6 +101,11 @@ copy; `workflow_source` in `workflow_status` shows the file.
 An agent state can set its own prompt for that state only:
 `"prompt": "@prompts/<file>.md"` (relative to the `.tyci/` dir of the workflow; no
 absolute path, no `..`, no symlink).
+
+The `post_review` check state of a custom workflow must have a `default` key, or one key for each answer of `post_review.sh`.
+The answers are `ok`, `skip` and `fail`.
+The script answers `skip` when the run has no review step, for example a run that continues an open PR.
+If a needed key is missing, the run fails with `unknown transition key "<key>" in state "post_review"`.
 
 ### Workflow proposals
 
@@ -141,6 +147,43 @@ Orchestrator keys (section `orchestrator`; the project file wins key by key):
 | `orchestrator.accepted_label` | `accepted` | non-empty string |
 
 An invalid value stops the orchestrator start and the message names the key and the file.
+
+### Headless CLI
+
+Use the `workflow` commands to run and check a workflow from a terminal or a script. These commands do not open the chat or the TUI. They never ask for an answer.
+
+| Command | Action | Exit code 0 | Exit code 1 |
+|---|---|---|---|
+| `tyci workflow run <name> <issue>` | Run a workflow for a GitHub issue | `done` or `paused` | `failed` or invalid |
+| `tyci workflow validate <name>` | Check a workflow. Do not start a run. | valid | invalid or unknown |
+| `tyci workflow status <run-id>` | Show the saved state of a run | `running`, `paused` or `done` | `failed`, unknown or ambiguous |
+
+- The second argument of `run` is the issue number. Example: `tyci workflow run issue-to-merge 191`.
+- `run` and `validate` take a workflow name, not a file path.
+- Use `--dir <path>` with `run` and `validate` to select the repository. The default is the current directory.
+- Use `--json` to print one JSON object on stdout. Progress and warnings go to stderr.
+
+The `run` command waits until the run ends or pauses at an ask state. A paused run is not an error. The command then prints `waiting at ask state <name>` on stderr. Answer the paused run with `workflow_resume` in the chat.
+
+This example shows the JSON output of a run that paused at an ask state:
+
+```bash
+tyci workflow run issue-to-merge 191 --json
+```
+
+```json
+{"run_id":"20261008-101500-191","workflow":"issue-to-merge","state":"ask","status":"paused","state_file":"/home/user/.tyci/runs/tyci-agent/20261008-101500-191/state.json"}
+```
+
+A failed run adds the field `error` with the reason. `validate` prints the list of problems in the field `errors`.
+
+If the project is not trusted, tyci skips the workflows in `.tyci/workflows/` and prints a note on stderr. Run `tyci tui` in the directory to get the trust question. Or edit `~/.tyci/trust.json`.
+
+The agents of a run use the same providers, hooks, Lua tools and MCP servers as `tyci run`. In a project that is not trusted, tyci does not load the project-local hooks, Lua tools and MCP servers.
+
+`validate` checks the workflow the same way a run checks it. It does not start a run or change a file.
+
+`status` searches the runs of every repository under `~/.tyci/runs/`, so it needs no `--dir`. If more than one repository has the run id, the command fails and lists the state files.
 
 ## Quick Start
 
@@ -204,15 +247,20 @@ model to try next when a request fails) — those stay configured separately.
 
 ### 2. Run the agent
 
+Set the model in `~/.tyci/config.json`. The format is `provider/model`:
+
+```json
+{"default_model": "my-provider/my-model"}
+```
+
+Run a one-shot prompt, or start the TUI:
+
 ```bash
 # One-shot prompt
-tyci run --model my-provider/my-model --prompt "What is the capital of France?"
+tyci run --prompt "What is the capital of France?"
 
 # TUI mode (rich terminal UI)
-tyci tui --model my-provider/my-model
-
-# Use agent presets
-tyci run --agent my-agent --prompt "Hello"
+tyci tui
 ```
 
 ## Run transcripts
@@ -241,7 +289,6 @@ runs. A negative value is a config error.
 ├── nexos-models.json   # Cached nexos API prices and limits (refreshed every 6 h)
 ├── model.json          # Custom provider / model definitions (from `provider add`)
 ├── auth.json           # API keys per provider (permissions 0600)
-├── agents.json         # Named agent configurations (name -> model + fallback)
 ├── agents/             # Markdown agent definitions (<name>.md, global)
 │   └── .managed.json   # sha256 bookkeeping for the builtin definitions (see below)
 ├── history             # Readline history file
@@ -258,7 +305,6 @@ runs. A negative value is a config error.
 |---------|-------------|
 | `run` | One-shot prompt (requires `--prompt`) |
 | `tui` | Rich terminal UI (Bubble Tea) |
-| `agent` | Manage agent configurations |
 | `provider` | Manage provider settings |
 | `cron` | List and run scheduled prompts |
 | `completion` | Generate shell completion script |
@@ -292,8 +338,6 @@ These flags work with `run` and `tui`:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--model` | `""` | Model to use (format: `provider/model`) |
-| `--agent` | `""` | Agent name for default model (from `~/.tyci/agents.json`) |
 | `--max-retries` | `5` | Max retries on transient errors (0 to disable) |
 | `--max-iterations` | `-1` | Max tool-call iterations (-1 = unlimited) |
 | `--history-file` | `""` | Path to history file (default: `~/.tyci/history`) |
@@ -367,28 +411,15 @@ tyci provider auth list
 tyci provider auth rm <provider>
 ```
 
-#### `tyci agent`
-
-Manage named agent configurations.
-
-```bash
-tyci agent list                          # List all agents
-tyci agent get <name>                    # Show agent model assignment
-tyci agent set <name> <provider>/<model> # Assign model to agent
-tyci agent delete <name>                 # Remove agent
-tyci agent set-fallback <name> <m1> [<m2> ...]  # Set fallback models (positional)
-tyci agent sync [--force]                # Unpack/update builtin agent definitions (see below)
-```
-
 #### Markdown agent definitions
 
-Beyond the model-only presets above, an agent can be declared as a markdown file with
+An agent can be declared as a markdown file with
 YAML frontmatter. The body becomes the agent's system prompt — by default *appended*
 as a role on top of the standard subagent prompt (see `system_prompt_mode` below), so
 you only need to describe what the agent specializes in, not restate its contract.
 
-Definitions are read from two locations, project overriding global on name collision —
-the same precedence `.tyci.json` has over `~/.tyci/agents.json`:
+tyci reads definitions from two locations. A project definition overrides a global
+definition with the same name:
 
 - `./.tyci/agents/<name>.md` — project-local, committed with the repo
 - `~/.tyci/agents/<name>.md` — global
@@ -455,8 +486,8 @@ tyci release, **but only for files it can prove it last wrote and you have not t
   upgrade. Copy it to `.tyci/agents/` (project-local) if you want your own version to
   win over a future global one instead.
 - Deleted it? That is respected as a deliberate choice, not resurrected on the next run.
-  Bring it back with `tyci agent sync --force`, which also overwrites any local edits —
-  see `tyci agent sync --help` for the full explanation.
+  To restore it, remove its entry from `~/.tyci/agents/.managed.json`. The next start of
+  tyci writes the stock file again.
 
 The builtin definitions deliberately omit `model`, so they inherit whatever model the
 parent agent is running on and work unmodified with every provider — nothing to
@@ -505,7 +536,7 @@ minutes:
 ### Display Modes
 
 - **run** — Plain text: only the final answer on stdout; errors, retry and fallback notices on stderr
-- **tui** — Bubble Tea TUI with split-pane, model picker, mouse support
+- **tui** — Bubble Tea TUI with split-pane layout and mouse support
 
 #### `tyci completion`
 
@@ -596,10 +627,8 @@ tyci compacts without asking. Set them in `~/.tyci/config.json`:
 { "compact_soft_limit": 100000, "compact_hard_limit": 150000 }
 ```
 
-Override them per agent with `compact_soft_limit` / `compact_hard_limit` in an
-`agents.json` entry. Subagents also read them from the agent definition
-frontmatter. The main conversation started with `--agent <name>` ignores
-frontmatter limits. Flow roles use `roles.<name>.compact_soft_limit` and
+Subagents read `compact_soft_limit` and `compact_hard_limit` from the agent definition
+frontmatter. Flow roles use `roles.<name>.compact_soft_limit` and
 `roles.<name>.compact_hard_limit` in the flow config.
 
 Flow roles also take `roles.<name>.effort` (`low`, `medium`, `high`, `xhigh` or
@@ -632,15 +661,22 @@ the ones that are done, job ids for the rest.
 
 ## Long background commands
 
-A command still running after 30s is moved to the background. At the one-minute
-mark it sends one line back — how long it has been running and nothing else —
-and repeats every five minutes after that.
+A bash call never blocks for more than 30s. A command that still runs after 30s
+moves to the background, and it keeps running there. Its `timeout` (default 120s)
+is the total run limit, also in the background. A larger timeout is limited to
+3600s. If every background slot is busy, the command stops at 30s with an error.
+At the one-minute mark the agent gets one line back: the time since the command
+started, and nothing else. It repeats every five minutes after that.
 
 It asks for nothing on purpose. A typo that turns a five-second command into a
 hang looks exactly like a legitimately slow build from the outside, and only
 the model knows which one it wrote; telling it to stop and re-check would
 interrupt real work most of the time the notice fired. The age is the useful
 part, so that is all the notice carries.
+
+A subagent uses the same hand-off. Its notice goes to the subagent that
+started the command. When the subagent ends, its background commands are
+stopped.
 
 ## Stream guards
 

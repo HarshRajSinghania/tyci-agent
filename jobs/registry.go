@@ -225,6 +225,10 @@ func (r *Registry) Start(ctx context.Context, description string, kind Kind, par
 			job.mailbox = nil
 			snapshot := eventSnapshotLocked(job)
 			onEvent := r.onEvent
+			// A background command this job started would outlive it with
+			// nobody left to collect its result. Stop those commands too, the
+			// same way Cancel stops a subtree (see tools/bgbash.go).
+			orphanKills := r.bashChildCancelsLocked(job)
 			// This job just became terminal, so this is exactly the moment the
 			// retained-history bound can be exceeded. Prune before releasing the
 			// lock; the snapshot above is already taken, so this job's own
@@ -233,6 +237,9 @@ func (r *Registry) Start(ctx context.Context, description string, kind Kind, par
 			r.pruneTerminalLocked()
 			r.mu.Unlock()
 
+			for _, kill := range orphanKills {
+				kill()
+			}
 			close(job.done)
 
 			if onEvent != nil {
@@ -403,6 +410,19 @@ func (r *Registry) subtreeOrderLocked(target *Job) []*Job {
 // all. Caller must hold r.mu.
 func (r *Registry) cancelableLocked(job *Job) bool {
 	return job.Status == StatusRunning || job.Status == StatusWaitingAnswer
+}
+
+// bashChildCancelsLocked returns the cancel funcs of the still-running
+// background commands (KindBash) that parent started. Caller must hold r.mu
+// and call the funcs after releasing it, as Cancel does.
+func (r *Registry) bashChildCancelsLocked(parent *Job) []context.CancelFunc {
+	var kills []context.CancelFunc
+	for _, child := range r.jobs {
+		if child.ParentID == parent.ID && child.Kind == KindBash && r.cancelableLocked(child) && child.cancel != nil {
+			kills = append(kills, child.cancel)
+		}
+	}
+	return kills
 }
 
 func (r *Registry) Get(id string) (*Job, bool) {
@@ -1030,7 +1050,22 @@ func (r *Registry) Post(id, text string) bool {
 		return false
 	}
 	job.mailbox = append(job.mailbox, text)
+	job.posted++
 	return true
+}
+
+// Posted returns how many messages Post has accepted for id, drained or not,
+// and 0 for an unknown id. It only grows, so a caller that remembers the value
+// can tell whether a new message arrived since, without taking it away from
+// DrainMessages.
+func (r *Registry) Posted(id string) uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	job, ok := r.jobs[id]
+	if !ok {
+		return 0
+	}
+	return job.posted
 }
 
 // IsLive reports whether id identifies a job that can still receive a

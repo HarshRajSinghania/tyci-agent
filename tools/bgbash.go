@@ -20,17 +20,19 @@ const (
 	// any command we just handed to the background.
 	BashDefaultTimeoutSec = 120
 
-	// BashBackgroundAfterSec is how long we wait before deciding a command
-	// is "taking longer than expected" and moving it to the background. Set
-	// above the runtime of an ordinary build or test run: below that, the
-	// handoff would cost the model an extra polling turn for commands that
-	// were about to finish anyway.
+	// BashBackgroundAfterSec is the most a bash call blocks. A command still
+	// running then is moved to the background, and the agent gets its turn
+	// back. The command is not killed at this point, unless no background slot
+	// is free (see Run). Set above the runtime of an ordinary build or test
+	// run: below that, the handoff would cost the model an extra polling turn
+	// for commands that were about to finish anyway.
 	BashBackgroundAfterSec = 30
 
-	// BashBackgroundLimitSec is the wall-clock backstop for a command that
-	// has been moved to the background. Nothing else bounds it once it is
-	// detached from the tool call's context, so without this a wedged
-	// process would live until tyci exits.
+	// BashBackgroundLimitSec caps the total run time of a command, also after
+	// it has been moved to the background. A larger timeout is capped to it.
+	// Nothing else bounds a backgrounded command once it is detached from the
+	// tool call's context, so without this a wedged process would live until
+	// tyci exits.
 	BashBackgroundLimitSec = 3600
 
 	// BashFirstProgressNoticeSec is when the first "still running" heads-up
@@ -78,24 +80,6 @@ func SetBackgroundBashEnabled(v bool) { backgroundBashEnabled.Store(v) }
 // registry there would be nowhere to record the result.
 func BackgroundBashEnabled() bool { return backgroundBashEnabled.Load() && getJobStarter() != nil }
 
-// backgroundAllowed reports whether the call site behind ctx may move a
-// command to the background. Two conditions, both necessary:
-//
-//   - the mode opted in (BackgroundBashEnabled), i.e. something will consume
-//     the completion notice and can act on it;
-//   - we are not inside a child agent. A subagent's run ends when it returns
-//     its answer, so a command it backgrounded would have nobody left to
-//     collect the result, and the completion notice would surface in the
-//     PARENT's conversation, which never issued the command. A child that
-//     needs a long command should block on it — it has its own wall-clock
-//     budget for exactly that.
-func backgroundAllowed(ctx context.Context) bool {
-	if !BackgroundBashEnabled() {
-		return false
-	}
-	return ctx.Value(SubagentSinkCtxKey{}) == nil
-}
-
 // JobNotifier receives one short, model-facing line when a background
 // command finishes. Deliberately a plain string rather than a job struct:
 // this package must not import "jobs" (same import-cycle rule as JobWaiter
@@ -117,6 +101,9 @@ func backgroundAllowed(ctx context.Context) bool {
 type JobNotifier interface {
 	Notify(text string)
 	MarkQuestionShown(jobID string, seq int)
+	// Queued returns how many notices were ever queued. wait compares it
+	// between two calls to see whether a new notice arrived.
+	Queued() uint64
 }
 
 // jobNotifier is nil until SetJobNotifier is called. Unlike the other job
@@ -141,6 +128,15 @@ func SetJobNotifier(n JobNotifier) {
 	jobNotifierMu.Lock()
 	jobNotifier = n
 	jobNotifierMu.Unlock()
+}
+
+// getJobNotifier copies the current JobNotifier out under RLock — see
+// getJobMailbox's doc comment (message.go) for why callers never hold the lock
+// while calling into the interface.
+func getJobNotifier() JobNotifier {
+	jobNotifierMu.RLock()
+	defer jobNotifierMu.RUnlock()
+	return jobNotifier
 }
 
 // notifyToParent routes text to the queue belonging to parentID — the job
@@ -194,6 +190,16 @@ func notifyToParent(parentID, text string) {
 	if n != nil {
 		n.Notify(text)
 	}
+}
+
+// parentEnded reports whether parentID names a job that can no longer receive
+// a message. The registry marks a job terminal before it stops the background
+// commands that job started, so a command stopped by its parent's end sees
+// true here. With no mailbox wired the answer is unknown, and this reports
+// false.
+func parentEnded(parentID string) bool {
+	mb := getJobMailbox()
+	return parentID != "" && mb != nil && !mb.IsLive(parentID)
 }
 
 // markQuestionsShown tells the wired JobNotifier that each jobID/seq pair in

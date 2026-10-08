@@ -7,9 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- CLI: `tyci workflow run <name> <issue>`, `tyci workflow validate <name>` and `tyci workflow status <run-id>` run and check workflows without the chat or the TUI. Each command has `--json`. `run` and `validate` have `--dir`. A run that pauses at an ask state has the status `paused` and exits with code 0 (#191).
 - TUI: the `main` row in the sidebar Tasks tab can be selected. Enter or a click on a subagent row shows that agent's conversation in the main window, and it updates live. The header names the viewed agent. Enter on `main`, or Esc, shows the main conversation again with its scroll position. Input still goes to the main conversation. Resumed jobs, promoted /btw jobs and /btw evaluations show their conversation the same way (#453).
 
 ### Changed
+- Flow: an apply or reject of a workflow proposal takes a worker slot, as before. The refusal of a start-up `resume` while `orchestrator.workers` runs are active now says so (#418).
+- Wait: `wait` also ends early when a new notice reaches the agent that calls it, for example a watchdog alarm or another job's completion. The main agent watches the shared notice queue. A subagent watches its own mailbox. The notice is still delivered as before. A notice that was already queued does not end the wait (#438).
+- Bash: a call blocks for at most 30s. A command that still runs after 30s moves to the background, and it keeps running there. `timeout` (default 120s) is the total run limit, also in the background. A larger timeout is limited to 3600s. A command with the default timeout stops 120s after it starts, also in the background. Before this change, a backgrounded command could run up to 3600s. Use a larger `timeout` for long builds. If every background slot is busy, the command stops at 30s with an error (#436).
+- Subagents: a bash command that runs longer than 30s moves to the background inside a subagent too. The completion notice goes to the subagent that started the command (#435).
+- Subagents: a subagent that lists `bash` in its `tools:` also gets `wait` and `kill_job`. It can wait for or stop only the jobs it started (#435).
+- TUI: the Runs tab shows one line per run, for example `#472 done (merged) 12m3s`, with the total cost at the end. Active runs come first, newest start first. Finished runs follow, newest end first. Enter or a click expands a run and shows every step visit with its duration and cost. The tab row is as wide as its labels, not split evenly over the sidebar (#310).
 - TUI: Enter or a click on a subagent row in the Tasks tab no longer opens the read-only transcript modal. It shows the live conversation in the main window instead (#453).
 - `tyci run --prompt` prints only the final answer on stdout, with one trailing newline. Tool calls and progress are no longer printed; errors, retry and fallback notices go to stderr (#189).
 - TUI: consecutive tool and thinking steps in the chat form one group line. The group is collapsed by default (#399).
@@ -19,10 +26,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - TUI: the Tokens tab lists the main session model first, then the subagent and scout rows. The `of that delegated` line is renamed `subsession`, and `total` is the last line (#455).
 
 ### Removed
+- Bash: the `background_after` parameter is removed. The move to the background always starts at 30s. An old call that sends `background_after` still runs, and the parameter has no effect (#436).
 - Lua workflows: the `.tyci/agents/*.lua` scripts and the `tyci workflow run` and `tyci workflow list` commands are removed. Use JSON workflows (v0.3.0) instead. `tyci workflow eject` stays.
 - `tyci console` and the `minimal`, `normal` and `interactive` display modes. Use `tyci tui` (interactive) or `tyci run --prompt` (one-shot) (#189).
+- TUI: the `/model` command, the model picker and the favorite models are removed. Tab, Shift+Tab and Ctrl+P no longer open a model picker. `/model` is handled like any unknown slash command (#190).
+- CLI: the `--model` and `--agent` flags, the `tyci agent` command and the agent presets in `agents.json` are removed. Set the model with `default_model` in `~/.tyci/config.json` (#190).
+- Config: the project file `.tyci/model.json` is no longer merged into the provider list. Only `~/.tyci/model.json` counts (#190).
+- Cron: the job `model` field and the `model` argument of the cron tool are removed. Jobs run on `default_model`. An old `model` key in `cron.json` is ignored and dropped on the next save (#190).
+
+Existing agents.json, .tyci.json and .tyci/model.json files are ignored (not deleted, not migrated).
 
 ### Fixed
+- Subagents: when a subagent ends, the background commands it started are stopped. No process stays after the subagent ends (#435).
+- Flow: the README states the keys that the `post_review` check state of a custom workflow needs: a `default` key, or one key for each answer of `post_review.sh` (`ok`, `skip` and `fail`). The runner does not change (#402).
+- Flow: a new issue worktree runs the repository's executable `bin/worktree-setup.sh`. Unlike `bin/worktree.sh`, tyci does not write `.env.worktree` or set `COMPOSE_PROJECT_NAME` before the script runs. A failing or cancelled script stops the run before it starts. The run removes the worktree and its branch, so a retry works (#449).
 - TUI: a click on the sidebar Sessions tab no longer freezes the UI. The session list loads in the background and is cached for 5 seconds. The Runs tab detects the repository once per session. Closing the resume picker during a turn no longer blocks the event loop (#462).
 - Flow: the review verdict is also read from a `report.md` that starts with a heading. Before, a report whose first line was not exactly `ACCEPT` or `CHANGES` gave `CHANGES`, so a run paused on `max_visits` after three rounds although every review accepted. The verdict is now the only line that reads `ACCEPT` or `CHANGES`, with an optional `Verdict:` prefix and Markdown markers. Both verdicts, or none, still give `CHANGES` (#470).
 - TUI: mouse wheel events no longer appear as text in the input box. A fast burst of wheel events could split an escape sequence at the read buffer end, and the input box then received it as text. A lone Esc key is released after 50 ms. Pasted text that looks like a mouse event is inserted (#426).

@@ -32,6 +32,12 @@ func (n *recordingNotifier) Notify(text string) {
 	n.mu.Unlock()
 }
 
+func (n *recordingNotifier) Queued() uint64 {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return uint64(len(n.seen))
+}
+
 func (n *recordingNotifier) MarkQuestionShown(jobID string, seq int) {
 	n.mu.Lock()
 	if n.shown == nil {
@@ -268,9 +274,8 @@ func TestBashAutoBackgroundAfterThreshold(t *testing.T) {
 	reg, _ := bgTestEnv(t)
 
 	start := time.Now()
-	res := (&BashTool{}).Run(context.Background(), map[string]any{
-		"command":          "sleep 2; echo eventually",
-		"background_after": 1,
+	res := (&BashTool{handoffSec: 1}).Run(context.Background(), map[string]any{
+		"command": "sleep 2; echo eventually",
 	})
 	elapsed := time.Since(start)
 
@@ -296,9 +301,8 @@ func TestBashAutoBackgroundAfterThreshold(t *testing.T) {
 func TestBashNoAutoBackgroundBeforeThreshold(t *testing.T) {
 	bgTestEnv(t)
 
-	res := (&BashTool{}).Run(context.Background(), map[string]any{
-		"command":          "echo quick",
-		"background_after": 5,
+	res := (&BashTool{handoffSec: 5}).Run(context.Background(), map[string]any{
+		"command": "echo quick",
 	})
 	if !res.Success || res.Content != "quick" {
 		t.Fatalf("expected inline output %q, got success=%v content=%q err=%q", "quick", res.Success, res.Content, res.Error)
@@ -314,10 +318,9 @@ func TestBashExplicitTimeoutStillBackgrounds(t *testing.T) {
 	bgTestEnv(t)
 
 	start := time.Now()
-	res := (&BashTool{}).Run(context.Background(), map[string]any{
-		"command":          bgSleeper,
-		"timeout":          600,
-		"background_after": 1,
+	res := (&BashTool{handoffSec: 1}).Run(context.Background(), map[string]any{
+		"command": bgSleeper,
+		"timeout": 600,
 	})
 	if !res.Success {
 		t.Fatalf("expected a handoff, got error: %s", res.Error)
@@ -330,18 +333,81 @@ func TestBashExplicitTimeoutStillBackgrounds(t *testing.T) {
 	}
 }
 
-// TestBashBackgroundAfterZeroKeepsForeground is the explicit opt-out that
-// replaced the inference above: a caller that really wants to block says so.
-func TestBashBackgroundAfterZeroKeepsForeground(t *testing.T) {
+// TestBashBackgroundAfterParamIsIgnored: background_after is gone. An old call
+// that still sends it, with 0 or with a large value, gets the same handoff as
+// any other call.
+func TestBashBackgroundAfterParamIsIgnored(t *testing.T) {
+	reg, _ := bgTestEnv(t)
+
+	for _, value := range []int{0, 300} {
+		res := (&BashTool{handoffSec: 1}).Run(context.Background(), map[string]any{
+			"command":          "sleep 2; echo late",
+			"timeout":          600,
+			"background_after": value,
+		})
+		if !res.Success || !strings.Contains(res.Content, "still running after 1s") {
+			t.Fatalf("background_after=%d: expected a handoff at 1s, got success=%v content=%q err=%q", value, res.Success, res.Content, res.Error)
+		}
+		job := waitForJob(t, reg, jobIDFromResult(t, res.Content), bgFinishCap)
+		if job.Result != "late" {
+			t.Fatalf("background_after=%d: expected the job result %q, got %q", value, "late", job.Result)
+		}
+	}
+}
+
+// TestBashTimeoutIsTotalAfterHandoff: the timeout limits the whole run, also
+// once the command is in the background. The handoff happens at the delay, and
+// the command is stopped when the timeout passes.
+func TestBashTimeoutIsTotalAfterHandoff(t *testing.T) {
+	reg, _ := bgTestEnv(t)
+
+	res := (&BashTool{handoffSec: 1}).Run(context.Background(), map[string]any{
+		"command": bgSleeper,
+		"timeout": 2,
+	})
+	if !res.Success || !strings.Contains(res.Content, "job_id") {
+		t.Fatalf("expected a handoff, got success=%v content=%q err=%q", res.Success, res.Content, res.Error)
+	}
+	job := waitForJob(t, reg, jobIDFromResult(t, res.Content), bgFinishCap)
+	if job.Status != jobs.StatusFailed {
+		t.Fatalf("expected the command to be stopped at its timeout, got status %s", job.Status)
+	}
+	if !strings.Contains(job.Err, "stopped before it finished") {
+		t.Fatalf("expected the error to say it was stopped, got %q", job.Err)
+	}
+}
+
+// TestBashNoFreeSlotStopsAtDelay: when every background slot is busy, a command
+// still running at the delay cannot move. It is stopped there, with an error
+// that says what to do, and the agent is not blocked until the timeout.
+func TestBashNoFreeSlotStopsAtDelay(t *testing.T) {
 	bgTestEnv(t)
 
-	res := (&BashTool{}).Run(context.Background(), map[string]any{
-		"command":          "echo waited",
-		"timeout":          60,
-		"background_after": 0,
+	for i := 0; i < maxBackgroundBash; i++ {
+		res := (&BashTool{}).Run(context.Background(), map[string]any{
+			"command":           bgSleeper,
+			"run_in_background": true,
+		})
+		if !res.Success || !strings.Contains(res.Content, "job_id") {
+			t.Fatalf("handoff %d should have succeeded: success=%v content=%q err=%q", i, res.Success, res.Content, res.Error)
+		}
+	}
+
+	start := time.Now()
+	res := (&BashTool{handoffSec: 1}).Run(context.Background(), map[string]any{
+		"command": bgSleeper,
+		"timeout": 600,
 	})
-	if !res.Success || res.Content != "waited" {
-		t.Fatalf("expected inline output, got success=%v content=%q err=%q", res.Success, res.Content, res.Error)
+	elapsed := time.Since(start)
+
+	if res.Success {
+		t.Fatalf("expected the command to be stopped, got success with %q", res.Content)
+	}
+	if !strings.Contains(res.Error, "no free background slot") {
+		t.Fatalf("expected a no-free-slot error, got %q", res.Error)
+	}
+	if elapsed > 10*time.Second {
+		t.Fatalf("blocked for %v; it should have been stopped at the delay", elapsed)
 	}
 }
 
@@ -384,13 +450,33 @@ func TestBashBackgroundDisabledRunsInForeground(t *testing.T) {
 	}
 }
 
-// TestBashNoBackgroundInsideSubagent: a child agent's run ends with its
-// answer, so it must never hand a command off to a job whose notice would
-// surface in the parent's conversation.
-func TestBashNoBackgroundInsideSubagent(t *testing.T) {
-	bgTestEnv(t)
+// regMailbox is the test twin of main's jobMailboxAdapter (btw.go): it wires
+// a real jobs.Registry in as the JobMailbox.
+type regMailbox struct{ reg *jobs.Registry }
 
-	ctx := context.WithValue(context.Background(), SubagentSinkCtxKey{}, &streamingCollector{collector: newCollector()})
+func (m regMailbox) Resolve(id string) (string, bool) { return m.reg.Resolve(id) }
+func (m regMailbox) Post(id, text string) bool        { return m.reg.Post(id, text) }
+func (m regMailbox) IsLive(id string) bool            { return m.reg.IsLive(id) }
+func (m regMailbox) Drain(id string) []string         { return m.reg.DrainMessages(id) }
+func (m regMailbox) Posted(id string) uint64          { return m.reg.Posted(id) }
+
+// TestBashBackgroundInsideSubagent: a child agent hands a command to the
+// background like the main agent does. Its completion notice goes to the
+// child's own mailbox, never to the main queue.
+func TestBashBackgroundInsideSubagent(t *testing.T) {
+	reg, notifier := bgTestEnv(t)
+	SetJobMailbox(regMailbox{reg})
+	t.Cleanup(func() { SetJobMailbox(nil) })
+
+	release := make(chan struct{})
+	defer close(release)
+	parent := reg.Start(context.Background(), "subagent", jobs.KindSubagent, "", func(context.Context, string) (string, bool, error) {
+		<-release
+		return "", false, nil
+	})
+
+	ctx := context.WithValue(context.Background(), JobIDCtxKey{}, parent.ID)
+	ctx = context.WithValue(ctx, SubagentSinkCtxKey{}, &streamingCollector{collector: newCollector()})
 	res := (&BashTool{}).Run(ctx, map[string]any{
 		"command":           "echo child",
 		"run_in_background": true,
@@ -398,8 +484,113 @@ func TestBashNoBackgroundInsideSubagent(t *testing.T) {
 	if !res.Success {
 		t.Fatalf("expected success, got error: %s", res.Error)
 	}
-	if !strings.HasPrefix(res.Content, "child") {
-		t.Fatalf("subagent bash should have run in the foreground, got %q", res.Content)
+	id := jobIDFromResult(t, res.Content)
+	waitForJob(t, reg, id, bgFinishCap)
+
+	mail := reg.DrainMessages(parent.ID)
+	if len(mail) != 1 || !strings.Contains(mail[0], "[background command]") {
+		t.Fatalf("expected the completion notice in the subagent mailbox, got %q", mail)
+	}
+	notifier.mu.Lock()
+	defer notifier.mu.Unlock()
+	for _, n := range notifier.seen {
+		if strings.Contains(n, "[background command]") {
+			t.Fatalf("subagent notice leaked to the main queue: %q", n)
+		}
+	}
+}
+
+// TestBashHandoffInsideSubagentTellsItToCollect: a subagent does not get a
+// completion notice unless it makes another tool call, and its background
+// commands stop when it returns its answer. So its handoff must name wait,
+// and must not tell it to skip wait the way the main agent's handoff does.
+// A resumed subagent carries JobIDCtxKey but no SubagentSinkCtxKey; its
+// commands stop with its job too, so it needs the same text.
+func TestBashHandoffInsideSubagentTellsItToCollect(t *testing.T) {
+	cases := []struct {
+		name     string
+		withSink bool
+	}{
+		{name: "subagent with sink", withSink: true},
+		{name: "resumed subagent without sink", withSink: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reg, _ := bgTestEnv(t)
+			SetJobMailbox(regMailbox{reg})
+			t.Cleanup(func() { SetJobMailbox(nil) })
+
+			release := make(chan struct{})
+			defer close(release)
+			parent := reg.Start(context.Background(), "subagent", jobs.KindSubagent, "", func(context.Context, string) (string, bool, error) {
+				<-release
+				return "", false, nil
+			})
+
+			ctx := context.WithValue(context.Background(), JobIDCtxKey{}, parent.ID)
+			if tc.withSink {
+				ctx = context.WithValue(ctx, SubagentSinkCtxKey{}, &streamingCollector{collector: newCollector()})
+			}
+			res := (&BashTool{}).Run(ctx, map[string]any{
+				"command":           "echo child",
+				"run_in_background": true,
+			})
+			if !res.Success {
+				t.Fatalf("expected success, got error: %s", res.Error)
+			}
+			id := jobIDFromResult(t, res.Content)
+			for _, want := range []string{"stop when you return your answer", fmt.Sprintf("call wait(job_id=%q)", id)} {
+				if !strings.Contains(res.Content, want) {
+					t.Errorf("subagent handoff should contain %q, got %q", want, res.Content)
+				}
+			}
+			for _, banned := range []string{"Do NOT call wait", "a notice reaches you"} {
+				if strings.Contains(res.Content, banned) {
+					t.Errorf("subagent handoff must not contain %q, got %q", banned, res.Content)
+				}
+			}
+			waitForJob(t, reg, id, bgFinishCap)
+		})
+	}
+}
+
+// TestSubagentEndStopsItsBackgroundCommand: a subagent ends while its
+// background command still runs. The command is stopped with the subagent, so
+// no process outlives it. bgSleeper outlives bgFinishCap, so a lost kill fails
+// the test instead of passing on the command's own exit. The stopped command
+// must not send a notice to the main queue: the main agent never started it.
+func TestSubagentEndStopsItsBackgroundCommand(t *testing.T) {
+	reg, notifier := bgTestEnv(t)
+	SetJobMailbox(regMailbox{reg})
+	t.Cleanup(func() { SetJobMailbox(nil) })
+
+	child := reg.Start(context.Background(), "subagent", jobs.KindSubagent, "", func(ctx context.Context, jobID string) (string, bool, error) {
+		ctx = context.WithValue(ctx, JobIDCtxKey{}, jobID)
+		ctx = context.WithValue(ctx, SubagentSinkCtxKey{}, &streamingCollector{collector: newCollector()})
+		res := (&BashTool{}).Run(ctx, map[string]any{
+			"command":           bgSleeper,
+			"run_in_background": true,
+		})
+		return res.Content, false, nil
+	})
+	ended := waitForJob(t, reg, child.ID, bgFinishCap)
+
+	cmd := waitForJob(t, reg, jobIDFromResult(t, ended.Result), bgFinishCap)
+	if cmd.Status != jobs.StatusFailed {
+		t.Fatalf("expected the command of an ended subagent to be stopped, got status %s", cmd.Status)
+	}
+	if !strings.Contains(cmd.Err, "stopped before it finished") {
+		t.Fatalf("expected the error to say it was stopped, got %q", cmd.Err)
+	}
+	if !strings.Contains(cmd.Err, "its parent job ended") {
+		t.Fatalf("expected the error to name the parent's end as a cause, got %q", cmd.Err)
+	}
+	notifier.mu.Lock()
+	defer notifier.mu.Unlock()
+	for _, n := range notifier.seen {
+		if strings.Contains(n, "[background command]") {
+			t.Fatalf("notice of a command stopped by its subagent's end reached the main queue: %q", n)
+		}
 	}
 }
 

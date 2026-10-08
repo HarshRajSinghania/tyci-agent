@@ -289,15 +289,14 @@ func builtinToolsSchema() []map[string]any {
 			"type": "function",
 			"function": map[string]any{
 				"name":        "bash",
-				"description": "Run a shell command; use it only when no other tool fits — find, read and write are cheaper and bounded. It blocks, and after 30s the command is moved to the background and you are NOTIFIED when it finishes: do other work, and never re-run a backgrounded command, because a second copy races the first. run_in_background=true for work you already know is long; background_after=0 to stay blocked; timeout (default 120s) is the total limit, not a promise to block.",
+				"description": "Run a shell command; use it only when no other tool fits — find, read and write are cheaper and bounded. A call blocks for at most 30s. A command still running then is moved to the background and you are NOTIFIED when it finishes: do other work, and never re-run a backgrounded command, because a second copy races the first. Use wait(job_id=...) to block on it. run_in_background=true for work you already know is long. timeout (default 120s) is the total run limit, also in the background.",
 				"parameters": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
 						"description":       map[string]any{"type": "string", "description": "Short description of what this command does. Also used as the label for a background job, so keep it recognisable."},
 						"command":           map[string]any{"type": "string", "description": "Command to execute"},
-						"timeout":           map[string]any{"type": "integer", "description": "How long the command may run in total, in seconds (default: 120). This is a limit, not a promise to block: the command still moves to the background after 30s and keeps running, and you can then wait(job_id=...) on it. To stay in the foreground instead, set background_after=0."},
+						"timeout":           map[string]any{"type": "integer", "description": "How long the command may run in total, in seconds (default: 120), also after it moved to the background. A call still blocks for at most 30s. If every background slot is busy, the command is stopped at 30s instead."},
 						"run_in_background": map[string]any{"type": "boolean", "description": "Start the command in the background immediately and return a job_id without waiting for any output. Use for long builds, test suites or watchers when you have other work to get on with."},
-						"background_after":  map[string]any{"type": "integer", "description": "Seconds to wait before moving the command to the background (default: 30). 0 disables the move, so the command runs in the foreground until it finishes or hits its timeout."},
 					},
 					"required": []string{"command"},
 				},
@@ -382,12 +381,12 @@ func builtinToolsSchema() []map[string]any {
 			"type": "function",
 			"function": map[string]any{
 				"name":        "wait",
-				"description": "Wait for a background job (job_id) or pause deliberately (seconds alone). With a job_id it waits until that job finishes or blocks on a question and returns the result — not a status snapshot — so one call gets you the answer; seconds is optional and defaults to 30 minutes, and the wait ends early if someone types. You do not need it to find out that a job finished, because you are notified; use it when you have nothing else to do, or to read a result once you are told.",
+				"description": "Wait for a background job (job_id) or pause deliberately (seconds alone). With a job_id it waits until that job finishes or blocks on a question and returns the result — not a status snapshot — so one call gets you the answer; seconds is optional and defaults to 30 minutes, and the wait ends early if someone types or a new notice arrives. You do not need it to find out that a job finished, because you are notified; use it when you have nothing else to do, or to read a result once you are told.",
 				"parameters": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
 						"seconds": map[string]any{"type": "integer", "description": fmt.Sprintf("How long to wait, in seconds. Clamped to [%d, %d].", MinWaitSeconds, MaxWaitSeconds)},
-						"job_id":  map[string]any{"type": "string", "description": "Id of a background job. The call waits until that job actually finishes (or blocks on a question), so it returns the result rather than a status — seconds is optional here and defaults to 30 minutes. It ends early if someone types. Omit for a plain sleep."},
+						"job_id":  map[string]any{"type": "string", "description": "Id of a background job. The call waits until that job actually finishes (or blocks on a question), so it returns the result rather than a status — seconds is optional here and defaults to 30 minutes. It ends early if someone types or a new notice arrives. Omit for a plain sleep."},
 						"note":    map[string]any{"type": "string", "description": "Optional note describing what you're waiting for, echoed back for context."},
 					},
 					"required": []string{"seconds"},
@@ -449,7 +448,6 @@ func builtinToolsSchema() []map[string]any {
 						"prompt":   map[string]any{"type": "string", "description": "What the scheduled agent is asked to do. It gets NOTHING else: no conversation history, no earlier findings. State the task, the paths, and what to report."},
 						"schedule": map[string]any{"type": "string", "description": "When to run: \"every 30m\", \"every 6h\" (shortest interval is 1m, measured from the end of the last run) \"at 07:30\" (local time, once a day) or \"in 5m\" (runs once, then is removed)."},
 						"dir":      map[string]any{"type": "string", "description": "Directory to run in. Defaults to the current one, recorded now — so the job keeps meaning the same project later."},
-						"model":    map[string]any{"type": "string", "description": "Optional model override (format: provider/model). Omit to use the configured default; a cheap model is usually right for a recurring check."},
 					},
 				},
 			},
@@ -875,8 +873,8 @@ func subagentToolsSchemaFor(allowed []string) []map[string]any {
 	if len(allowed) == 0 {
 		return GetSubagentToolsSchema()
 	}
-	want := make(map[string]bool, len(allowed)+len(alwaysAllowedTools))
-	for _, name := range allowed {
+	want := make(map[string]bool, len(allowed)+len(alwaysAllowedTools)+len(backgroundCompanionTools))
+	for _, name := range withBackgroundCompanions(allowed) {
 		if IsSubagentDenied(name) {
 			continue
 		}
